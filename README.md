@@ -26,7 +26,8 @@ context, chunks = engine.neural_search("你的问题", top_k=3)
 result = engine.compare_retrievers("你的问题", top_k=3)
 
 
-He Bien feature_implementation part
+**He Bien feature_implementation part**
+
 ## Feature Implementation (`notebooks/feature_implementation.ipynb`)
 
 This notebook demonstrates the **required project features** using the same **unified interface** as `notebooks/evaluation_basic.py`:
