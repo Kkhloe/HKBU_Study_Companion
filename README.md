@@ -25,8 +25,86 @@ context, chunks = engine.neural_search("你的问题", top_k=3)
 # 对比两种检索器
 result = engine.compare_retrievers("你的问题", top_k=3)
 
+**He Bien Evaluation part**
 
-**He Bien feature_implementation part**
+## Evaluation (`notebooks/evaluation_update.ipynb`)
+
+This notebook is the **main evaluation** artifact. It is designed to run **top-to-bottom** and produce the figures/tables needed for the project report (quality + token-efficiency evidence).
+
+It is also aligned with the **basic unified interface** used in `notebooks/evaluation_basic.py`:
+
+- `rag = RAGEngine(...)`
+- `pm = PromptManager()`
+- `chat = ChatLogic(rag, pm)`
+- `chat.process_query(query, retrieval_type=..., top_k=...)` → returns `response`, `cited_docs`, `total_tokens`, etc.
+
+### What this notebook covers
+
+- **Retrieval sanity check**: lexical vs neural retrieved contexts for a representative query.
+- **Evaluation on representative queries**:
+  - **Baseline**: **No-RAG vs Neural RAG** (A/B answers + judge scores + winner).
+  - **Retriever comparison**: **Lexical RAG vs Neural RAG** (A/B answers + judge scores + winner).
+  - **Context optimization**: **Raw vs summarized context** (neural) to show token-efficiency trade-offs.
+- **Token-efficiency evidence**:
+  - Real token counts from `ollama.generate` via `ChatLogic` (`total_tokens`).
+  - Optional approximate context token counts for context-only comparisons.
+  - **top_k tradeoff** plots:
+    - **quality vs top_k**
+    - **quality vs token-usage**
+    - **token-usage vs top_k**
+- **Visualization**: lexical vs neural wordclouds (falls back to a top-words bar chart if `wordcloud` is not installed).
+
+### Prerequisites
+
+- **Ollama** installed and running.
+- Models pulled locally:
+  - Embeddings: `nomic-embed-text`
+  - Generation / judge: `gemma3:4b` (used in `src/chat_logic.py`; judge model is also set to `gemma3:4b` in the evaluation helpers)
+
+### Environment / dependencies (Windows PowerShell)
+
+If you use the course venv at `e:\HKBU\COMP7125 Prompt Engineering\lab\venv`:
+
+```powershell
+cd "e:\HKBU\COMP7125 Prompt Engineering\lab"
+.\venv\Scripts\python.exe -m pip install -U pip
+.\venv\Scripts\python.exe -m pip install ollama numpy matplotlib pandas
+```
+
+Optional (for true wordcloud images):
+
+```powershell
+.\venv\Scripts\python.exe -m pip install wordcloud
+```
+
+### Data requirement
+
+The RAG engine loads a pre-chunked JSONL file. In the current codebase we use:
+
+- `data/chunks_natural_500_50.jsonl` (default in `src/rag_engine.py`)
+
+If you switch to another chunk file, keep `evaluation_update.ipynb` and `src/main.py` consistent.
+
+### How to run
+
+1. Open `HKBU_Study_Companion-main/HKBU_Study_Companion-main/notebooks/evaluation_update.ipynb`.
+2. Run cells **top-to-bottom**, following the “Module / Comparison” markdown headings.
+3. If you hit an Ollama OOM error (`memory layout cannot be allocated`):
+   - Reduce `top_k`, or reduce output lengths (e.g., `num_predict`) in `src/chat_logic.py`
+   - Switch to a smaller local model if necessary (within the course constraint)
+
+### Outputs to include in the report/presentation
+
+- **Baseline results**: No-RAG vs RAG (neural) quality + token comparison.
+- **Retriever comparison**: Lexical vs Neural quality + token comparison.
+- **Context optimization**: Raw vs summarized (token reduction + quality impact).
+- **Figures**:
+  - Wordcloud (or bar chart) comparison for Q1 (lexical vs neural).
+  - Three top_k tradeoff plots (per retriever).
+
+
+
+**He Bien Feature Implementation part**
 
 ## Feature Implementation (`notebooks/feature_implementation.ipynb`)
 
