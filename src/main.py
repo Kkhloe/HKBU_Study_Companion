@@ -1,6 +1,6 @@
-from .rag_engine import RAGEngine
-from .prompt_manager import PromptManager
-from .chat_logic import ChatLogic
+from rag_engine import RAGEngine
+from prompt_manager import PromptManager
+from chat_logic import ChatLogic
 
 def main():
     print("Initialize HKBU Study Companion...")

@@ -3,10 +3,11 @@ import streamlit as st
 import ollama
 from pathlib import Path
 
-# 导入我们优化后的后端模块
-from src.rag_engine import RAGEngine
-from src.prompt_manager import PromptManager
-from src.chat_logic import ChatLogic
+# 导入后端模块
+from rag_engine import RAGEngine
+from prompt_manager import PromptManager
+from chat_logic import ChatLogic
+from react_engine import ReActEngine  # ReAct 推理引擎
 
 st.set_page_config(
     page_title="HKBU Study Companion",
@@ -15,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ====================== CSS (保持您原有的精致风格) ======================
+# ====================== CSS ======================
 st.markdown("""
 <style>
 * {font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 300;}
@@ -41,6 +42,10 @@ if "rag" not in st.session_state:
         st.session_state.pm = PromptManager()
         st.session_state.chat = ChatLogic(st.session_state.rag, st.session_state.pm)
         st.session_state.messages = []
+        
+        # 初始化 ReAct 引擎（但默认禁用）
+        st.session_state.react_engine = ReActEngine(max_steps=5, model="gemma3:4b")
+        st.session_state.react_enabled = False
 
 st.title("📚 Study Companion")
 st.caption("HKBU | Local AI Study Assistant powered by Ollama + RAG")
@@ -71,6 +76,31 @@ with st.sidebar:
     # 生成参数
     st.markdown("##### Generation")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.0 if "qa" else 0.7, step=0.1)
+    
+    # ==================== ReAct 推理引擎 ====================
+    st.markdown("##### 🧠 Reasoning Mode (ReAct)")
+    react_enable = st.checkbox("Enable ReAct Reasoning", value=st.session_state.react_enabled)
+    
+    if react_enable != st.session_state.react_enabled:
+        st.session_state.react_enabled = react_enable
+        if react_enable:
+            # 启用 ReAct
+            st.session_state.chat.enable_react(st.session_state.react_engine)
+            st.success("✅ ReAct Reasoning Enabled")
+        else:
+            # 禁用 ReAct
+            st.session_state.chat.disable_react()
+            st.info("ReAct Reasoning Disabled")
+    
+    if st.session_state.react_enabled:
+        max_steps = st.slider(
+            "Max Reasoning Steps",
+            min_value=1,
+            max_value=10,
+            value=5,
+            help="Number of Thought-Action-Observation cycles"
+        )
+        st.session_state.react_engine.max_steps = max_steps
     
     # 文档管理
     st.markdown("##### Knowledge Base")
@@ -114,6 +144,21 @@ if user_input:
         
         # 显示回答
         st.markdown(result["response"])
+        
+        # ==================== 显示 ReAct 推理过程（如果启用） ====================
+        if result.get("reasoning_enabled", False):
+            with st.expander("🧠 Show Reasoning Steps"):
+                for step in result.get("reasoning_steps", []):
+                    st.write(f"**Step {step['step']}**")
+                    st.write(f"Thought: {step['thought']}")
+                    st.write(f"Action: {step['action']}")
+                    st.write(f"Observation: {step['observation']}")
+                    st.divider()
+            
+            if "reasoning_trace" in result:
+                with st.expander("📋 Full Reasoning Trace"):
+                    st.code(result["reasoning_trace"], language="text")
+        
         st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
         st.caption(f"📊 Tokens: {result['total_tokens']} | Mode: {result['mode'].upper()}")
     
@@ -138,16 +183,29 @@ with st.container():
     if st.button("🚀 Generate Personalized Study Plan", type="primary", use_container_width=True):
         if time_limit and study_goal:
             with st.spinner("AI is creating your study plan using course documents..."):
-                plan_query = (
-                    f"Create a realistic study plan. "
-                    f"Available time: {time_limit}. "
-                    f"Goal: {study_goal}. "
-                    f"Intensity: {intensity}."
-                )
+                plan_query = f"""
+You are a professional study plan generator for HKBU students.
+
+Create a realistic, step-by-step study plan based STRICTLY on the retrieved course materials.
+
+Follow these rules:
+1. ONLY use information from the provided course documents.
+2. DO NOT invent content not in the documents.
+3. DO NOT switch to other courses (e.g., do NOT use COMP7200 if the goal is COMP7045).
+4. If information is insufficient, say "Not enough course material available."
+5. Structure the plan clearly by time slots and topics.
+
+Available time: {time_limit}
+Study goal: {study_goal}
+Intensity level: {intensity}
+
+Generate the study plan now.
+"""
                 # 直接走同一个 RAG 管道（自动识别为 plan 模式）
                 result = st.session_state.chat.process_query(
                     query=plan_query,
-                    retrieval_type=retrieval_type
+                    retrieval_type=retrieval_type,
+                    use_react_override=False
                 )
             
             st.success(f"🎯 Study Plan for: {study_goal}")
@@ -163,6 +221,36 @@ with st.container():
             })
         else:
             st.warning("⚠️ Please fill in Available Time and Study Goal.")
+
+# ====================== LLM-as-a-Judge 评判区 ======================
+st.markdown("### ⚖️ LLM-as-a-Judge ")
+if st.session_state.messages:
+    # 查找最近一条 assistant 回复和对应 user 问题
+    last_user = None
+    last_assistant = None
+    for msg in reversed(st.session_state.messages):
+        if msg["role"] == "assistant" and last_assistant is None:
+            last_assistant = msg
+        elif msg["role"] == "user" and last_user is None:
+            last_user = msg
+        if last_user and last_assistant:
+            break
+    if last_user and last_assistant:
+        with st.expander("🔍 Judge the Last AI Answer"):
+            if st.button("Run LLM Judge", key="judge_btn", use_container_width=True):
+                with st.spinner("LLM is evaluating the answer..."):
+                    # 获取上下文（可选：拼接最近检索内容）
+                    context = ""
+                    judge_result = st.session_state.chat.judge_response(
+                        query=last_user["content"],
+                        answer=last_assistant["content"],
+                        context=context
+                    )
+                st.success(f"Score: {judge_result.get('score','?')}")
+                st.markdown(f"**Reasoning:** {judge_result.get('reasoning','')}")
+                st.markdown(f"**Suggestion:** {judge_result.get('suggestion','')}")
+            else:
+                st.info("Click the button to evaluate the latest AI response.")
 
 # 页脚
 st.caption("Built with Ollama + Local RAG | FSC 801CD Compatible")
