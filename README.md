@@ -25,9 +25,9 @@ context, chunks = engine.neural_search("你的问题", top_k=3)
 # 对比两种检索器
 result = engine.compare_retrievers("你的问题", top_k=3)
 
-#Evaluation- He Bien
+## Evaluation- He Bien
 
-## Evaluation (`notebooks/evaluation_update.ipynb`)
+`evaluation_update.ipynb`
 
 This notebook is the **main evaluation** artifact. It is designed to run **top-to-bottom** and produce the figures/tables needed for the project report (quality + token-efficiency evidence).
 
@@ -104,7 +104,7 @@ If you switch to another chunk file, keep `evaluation_update.ipynb` and `src/mai
 
 
 
-##Chat logic part - He Bien
+## Chat logic part - He Bien
 
 **What it is:** A small module that runs one round of chat: detect task mode → retrieve text from local chunks (RAG) → build the prompt → call Ollama → return the answer and stats.
 
