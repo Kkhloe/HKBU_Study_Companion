@@ -40,6 +40,7 @@ def load_chunks(chunk_file: str) -> List[Dict]:
             return chunks
     raise FileNotFoundError(f"Chunk file not found: {chunk_file} (checked data/ and output/)")
 
+
 # ============================================================
 # Part 2: Lexical Retriever (keyword matching)
 # ============================================================
@@ -242,7 +243,7 @@ class NeuralRetriever:
             source_path = self.chunks[i]["metadata"].get("source_path", "")
             for course_code in target_course_codes:
                 if course_code in source_path.upper():
-                    similarity += 0.3  # Significant boost for course code match (from user_goals)
+                    similarity += 0.3  # Significant boost for course code match
                     similarity = min(similarity, 1.0)  # Cap at 1.0
                     break  # Avoid multiple boosts for same chunk
             
@@ -289,11 +290,12 @@ class NeuralRetriever:
 
 
 # ============================================================
-# Part 4: RAG Engine (unified interface)
+# Part 4: RAG Engine (unified interface with course code enhancement)
 # ============================================================
+
 class RAGEngine:
     def __init__(self, chunk_file: str = "chunks_natural_500_50.jsonl"):
-        print(f" Initializing RAG Engine with {chunk_file}")
+        print(f"Initializing RAG Engine with {chunk_file}")
         
         self.chunks = load_chunks(chunk_file)
         self.chunk_file = chunk_file
@@ -313,7 +315,7 @@ class RAGEngine:
         cache_path = VECTOR_DB_DIR / f"{self.chunk_file.replace('.jsonl', '_embeddings.npy')}"
         
         if cache_path.exists():
-            print(f" Loading cached embeddings from {cache_path}")
+            print(f"Loading cached embeddings from {cache_path}")
             return np.load(cache_path)
         
         print("No cache found → generating embeddings (this runs only once)...")
@@ -329,57 +331,190 @@ class RAGEngine:
         print(f"Embeddings cached to {cache_path}")
         return embeddings
 
-    def lexical_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
-        """Lexical search with optional course code prioritization
+    # ============================================================
+    # Course Code Enhancement Methods (Non-invasive preprocessing)
+    # ============================================================
+    
+    def _extract_course_codes(self, text: str) -> List[str]:
+        """
+        Extract course codes from query text.
+        Supports formats: COMP7045, COMP 7045, comp7045, comp 7045
+        Returns normalized list: ["COMP7045", "COMP7065"]
+        """
+        # Match COMP followed by 4 digits, with optional space
+        pattern = r'\b(COMP\s*\d{4})\b'
+        matches = re.findall(pattern, text.upper())
+        # Normalize: remove spaces, ensure COMP prefix
+        return [m.replace(' ', '') for m in matches]
+    
+    def _enhance_query_with_course_codes(self, query: str, course_codes: List[str]) -> str:
+        """
+        Enhance query by adding multiple variations of course codes.
+        Example: "7045 grading" -> "7045 grading COMP7045 COMP 7045 7045"
+        """
+        if not course_codes:
+            return query
+        
+        enhanced = query
+        for code in course_codes:
+            code_num = code[4:]  # Extract "7045" from "COMP7045"
+            with_space = f"COMP {code_num}"
+            # Add different formats to improve recall
+            enhanced += f" {code} {with_space} {code_num}"
+        
+        return enhanced
+    
+    def _filter_chunks_by_course_codes(self, chunks: List[Dict], target_codes: List[str]) -> List[Dict]:
+        """
+        Post-filter: keep only chunks that belong to target course codes.
+        This is an optional aggressive filter for precision-critical queries.
+        """
+        if not target_codes:
+            return chunks
+        
+        filtered = []
+        for chunk in chunks:
+            source = chunk["metadata"].get("source_path", "").upper()
+            for code in target_codes:
+                if code.upper() in source:
+                    filtered.append(chunk)
+                    break
+        return filtered
+    
+    def _reformat_context(self, chunks: List[Dict]) -> str:
+        """Reformat filtered chunks back to context string"""
+        if not chunks:
+            return "No relevant information found."
+        
+        parts = []
+        for i, chunk in enumerate(chunks, 1):
+            source = chunk["metadata"].get("source_path", "Unknown source")
+            page = chunk["metadata"].get("page_label", "?")
+            parts.append(f"[{i}] Source: {source} (Page {page})\nContent: {chunk['text'][:500]}...")
+        return "\n\n".join(parts)
+
+    # ============================================================
+    # Public Search Methods with Course Code Enhancement
+    # ============================================================
+    
+    def lexical_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None, 
+                       enable_post_filter: bool = False) -> Tuple[str, List[Dict]]:
+        """
+        Lexical search with automatic course code enhancement.
         
         Args:
             query: Search query
             top_k: Number of results to return
-            course_codes: Additional course codes to prioritize (from user_goals)
+            course_codes: Optional pre-extracted course codes (from user_goals)
+            enable_post_filter: If True, aggressively filter out non-matching course chunks
+        
+        Returns:
+            (context_string, retrieved_chunks)
         """
-        return self.lexical.answer_with_context(query, top_k, course_codes=course_codes)
-
-    def neural_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
-        """Neural search with optional course code prioritization
+        # Step 1: Extract course codes from query
+        extracted_codes = self._extract_course_codes(query)
+        
+        # Step 2: Merge with explicitly provided codes
+        all_codes = list(set((course_codes or []) + extracted_codes))
+        
+        # Step 3: Enhance query with course code variations
+        enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
+        
+        # Step 4: Perform retrieval
+        context, chunks = self.lexical.answer_with_context(enhanced_query, top_k, course_codes=all_codes)
+        
+        # Step 5: Optional aggressive post-filtering
+        if enable_post_filter and all_codes:
+            chunks = self._filter_chunks_by_course_codes(chunks, all_codes)
+            context = self._reformat_context(chunks)
+        
+        return context, chunks
+    
+    def neural_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None,
+                      enable_post_filter: bool = False) -> Tuple[str, List[Dict]]:
+        """
+        Neural search with automatic course code enhancement.
         
         Args:
             query: Search query
             top_k: Number of results to return
-            course_codes: Additional course codes to prioritize (from user_goals)
+            course_codes: Optional pre-extracted course codes (from user_goals)
+            enable_post_filter: If True, aggressively filter out non-matching course chunks
+        
+        Returns:
+            (context_string, retrieved_chunks)
         """
-        return self.neural.answer_with_context(query, top_k, course_codes=course_codes)
-
+        # Step 1: Extract course codes from query
+        extracted_codes = self._extract_course_codes(query)
+        
+        # Step 2: Merge with explicitly provided codes
+        all_codes = list(set((course_codes or []) + extracted_codes))
+        
+        # Step 3: Enhance query with course code variations
+        enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
+        
+        # Step 4: Perform retrieval
+        context, chunks = self.neural.answer_with_context(enhanced_query, top_k, course_codes=all_codes)
+        
+        # Step 5: Optional aggressive post-filtering
+        if enable_post_filter and all_codes:
+            chunks = self._filter_chunks_by_course_codes(chunks, all_codes)
+            context = self._reformat_context(chunks)
+        
+        return context, chunks
+    
     def compare_retrievers(self, query: str, top_k: int = 3) -> Dict:
-        """A comparative experiment interface specifically designed for evaluation.ipynb"""
+        """Compare both retrievers (for evaluation)"""
         lexical_context, lexical_chunks = self.lexical_search(query, top_k)
         neural_context, neural_chunks = self.neural_search(query, top_k)
+        
         return {
             "query": query,
-            "lexical": {"context": lexical_context, "chunks": lexical_chunks, "num_chunks": len(lexical_chunks)},
-            "neural": {"context": neural_context, "chunks": neural_chunks, "num_chunks": len(neural_chunks)}
+            "lexical": {
+                "context": lexical_context, 
+                "chunks": lexical_chunks, 
+                "num_chunks": len(lexical_chunks)
+            },
+            "neural": {
+                "context": neural_context, 
+                "chunks": neural_chunks, 
+                "num_chunks": len(neural_chunks)
+            }
         }
+
+
 # ============================================================
 # Test code (runs when this file is executed directly)
 # ============================================================
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("HKBU Study Companion - Optimized RAG Engine Test")
+    print("HKBU Study Companion - Enhanced RAG Engine Test")
     print("=" * 70)
     
     engine = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
     
-    test_query = "What is the group registration deadline for COMP4146?"
+    # Test queries with course codes
+    test_queries = [
+        "COMP7045 grading",
+        "7045 assessment",
+        "What is the group registration deadline for COMP4146?",
+        "COMP 7015 vs COMP 7065 difference"
+    ]
     
-    print(f"\nTest query: {test_query}")
-    print("-" * 70)
+    for test_query in test_queries:
+        print(f"\n" + "=" * 70)
+        print(f"Test query: {test_query}")
+        print("-" * 70)
+        
+        print("\nLexical Retrieval (with enhancement):")
+        lex_ctx, lex_chunks = engine.lexical_search(test_query, top_k=2)
+        print(lex_ctx)
+        
+        print("\nNeural Retrieval (with enhancement):")
+        neu_ctx, neu_chunks = engine.neural_search(test_query, top_k=2)
+        print(neu_ctx)
     
-    print("\nLexical Retrieval:")
-    lex_ctx, lex_chunks = engine.lexical_search(test_query, top_k=2)
-    print(lex_ctx)
-    
-    print("\nNeural Retrieval:")
-    neu_ctx, neu_chunks = engine.neural_search(test_query, top_k=2)
-    print(neu_ctx)
-    
-    print("\n Optimization complete! Ready for direct integration chat_logic.py")
+    print("\n" + "=" * 70)
+    print("Enhancement complete! Ready for integration with chat_logic.py")
+    print("=" * 70)

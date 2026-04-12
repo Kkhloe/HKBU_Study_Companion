@@ -91,6 +91,7 @@ class ChatLogic:
         return_metadata: bool = False,
         token_budget: Optional[TokenBudget] = None,
         update_history: bool = True,
+        use_react_override: bool = False,
     ) -> Dict:
         """
         Process one user turn: detect mode, retrieve context, assemble prompt, generate response.
