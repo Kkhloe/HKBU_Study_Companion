@@ -34,8 +34,8 @@ class ChatLogic:
     Conversation orchestration: mode detection, RAG retrieval, prompt assembly, and generation.
 
     ``history`` stores prior user/assistant turns so follow-up queries (e.g., updating a plan)
-    are evaluated with conversation context. Uses ``ollama.generate`` with
-    ``DEFAULT_GENERATION_MODEL``.
+    are evaluated with conversation context. Uses ``ollama.generate``; pass ``model=`` per call or
+    ``DEFAULT_GENERATION_MODEL`` by default.
     """
 
     def __init__(self, rag_engine: RAGEngine, prompt_manager: PromptManager):
@@ -98,25 +98,36 @@ class ChatLogic:
         token_budget: Optional[TokenBudget] = None,
         update_history: bool = True,
         use_react_override: bool = False,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict:
         """
         Process one user turn: detect mode, retrieve context, assemble prompt, generate response.
+
+        ``model``: Ollama model name for generation (defaults to ``DEFAULT_GENERATION_MODEL``).
 
         Conversation memory: prior turns in ``self.history`` are passed to the prompt manager
         so multi-turn flows (e.g., revising a study plan) work like the notebook demo.
         Set ``update_history=False`` when running side-by-side baselines so one query does not duplicate turns.
 
+        Structured constraints (optional) are forwarded to ``PromptManager.assemble_prompt`` so study-plan
+        prompts can include a USER CONSTRAINTS block (time, goals, workload).
+
         Returns a dict including:
         - response: model text
         - prompt_tokens, completion_tokens, total_tokens: from Ollama eval counts
-        - mode, retrieval_type, cited_docs, context_used, budget_info
+        - mode, retrieval_type, cited_docs, context_used, budget_info, model
         - metadata (if return_metadata): prompt assembly and generation config details
         """
         mode = self._detect_mode(query)
+        resolved_model = model or DEFAULT_GENERATION_MODEL
 
         # 判断是否启用 ReAct
         if hasattr(self, "react_engine") and getattr(self, "react_enabled", False):
-            # 使用 ReAct 推理
+            # 使用 ReAct 推理（与主链路使用同一生成模型）
+            self.react_engine.model = resolved_model
             context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
             react_result = self.react_engine.reason(query, context=context_str)
             result = {
@@ -134,7 +145,8 @@ class ChatLogic:
                     for chunk in retrieved_chunks
                 ])),
                 "context_used": len(retrieved_chunks),
-                "budget_info": {"note": "ReAct reasoning mode"}
+                "budget_info": {"note": "ReAct reasoning mode"},
+                "model": resolved_model,
             }
             if update_history:
                 self._append_history_turn(query, react_result["final_answer"])
@@ -157,12 +169,15 @@ class ChatLogic:
             context_str=context_str,
             history=self.history,
             mode=mode,
-            token_budget=token_budget
+            token_budget=token_budget,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload,
         )
         gen_config = GenerationConfig(mode=mode)
         gen_params = gen_config.get_generation_params()
         response = ollama.generate(
-            model=DEFAULT_GENERATION_MODEL,
+            model=resolved_model,
             prompt=prompt,
             options=gen_params
         )
@@ -181,8 +196,15 @@ class ChatLogic:
                 for chunk in retrieved_chunks
             ])),
             "context_used": len(retrieved_chunks),
-            "budget_info": token_budget.get_budget_info()
+            "budget_info": token_budget.get_budget_info(),
+            "model": resolved_model,
         }
+        if user_time or user_goals or user_workload:
+            result["user_constraints"] = {
+                "user_time": user_time,
+                "user_goals": user_goals,
+                "user_workload": user_workload,
+            }
         if return_metadata:
             result["metadata"] = {
                 "prompt_metadata": prompt_metadata,
@@ -200,15 +222,17 @@ class ChatLogic:
         self,
         query: str,
         update_history: bool = True,
+        model: Optional[str] = None,
     ) -> Dict:
         """
         Baseline generation without retrieved documents (no local context), for no-RAG vs RAG comparison.
         Matches the minimal prompt style used in ``notebooks/evaluation_update.ipynb`` / ``evaluation.py``.
         """
         mode = self._detect_mode(query)
+        resolved_model = model or DEFAULT_GENERATION_MODEL
         prompt = f"You are HKBU Study Companion.\nUser: {query}\nAssistant: "
         response = ollama.generate(
-            model=DEFAULT_GENERATION_MODEL,
+            model=resolved_model,
             prompt=prompt,
             options={"temperature": 0.0, "num_predict": 600},
         )
@@ -225,6 +249,7 @@ class ChatLogic:
             "cited_docs": [],
             "context_used": 0,
             "budget_info": {"note": "no-RAG baseline; no TokenBudget assembly"},
+            "model": resolved_model,
         }
 
         if update_history:
@@ -239,22 +264,45 @@ class ChatLogic:
         query: str,
         retrieval_type: str = "neural",
         top_k: int = 3,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict:
         """Run no-RAG and RAG on the same query without appending duplicate history entries."""
-        no_rag = self.process_query_no_rag(query, update_history=False)
+        no_rag = self.process_query_no_rag(query, update_history=False, model=model)
         rag = self.process_query(
-            query, retrieval_type=retrieval_type, top_k=top_k, update_history=False
+            query,
+            retrieval_type=retrieval_type,
+            top_k=top_k,
+            update_history=False,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload,
+            model=model,
         )
         return {"no_rag": no_rag, "rag": rag}
 
-    def compare_lexical_vs_neural(self, query: str, top_k: int = 3) -> Dict:
+    def compare_lexical_vs_neural(
+        self,
+        query: str,
+        top_k: int = 3,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Dict:
         """Run lexical and neural RAG on the same query without appending duplicate history entries."""
-        lexical = self.process_query(
-            query, retrieval_type="lexical", top_k=top_k, update_history=False
+        kw = dict(
+            top_k=top_k,
+            update_history=False,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload,
+            model=model,
         )
-        neural = self.process_query(
-            query, retrieval_type="neural", top_k=top_k, update_history=False
-        )
+        lexical = self.process_query(query, retrieval_type="lexical", **kw)
+        neural = self.process_query(query, retrieval_type="neural", **kw)
         return {"lexical": lexical, "neural": neural}
 
     # --- Advanced / utilities ---
@@ -273,7 +321,11 @@ class ChatLogic:
         retrieval_type: str = "neural",
         top_k: int = 3,
         max_prompt_tokens: int = 3200,
-        max_output_tokens: int = 800
+        max_output_tokens: int = 800,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict:
         """Advanced query processing with custom token budgets; calls process_query with return_metadata=True."""
         token_budget = TokenBudget(
@@ -288,6 +340,10 @@ class ChatLogic:
             return_metadata=True,
             token_budget=token_budget,
             update_history=True,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload,
+            model=model,
         )
 
     def clear_history(self):
