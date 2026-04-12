@@ -42,6 +42,22 @@ if "rag" not in st.session_state:
         st.session_state.chat = ChatLogic(st.session_state.rag, st.session_state.pm)
         st.session_state.messages = []
 
+# ====================== 同步消息历史：保持 ChatLogic.history 与 UI 消息同步 ======================
+# 这是多轮对话的关键：每次重新运行时，重新构建 ChatLogic 的历史
+def sync_chat_history():
+    """将 Streamlit UI 消息与 ChatLogic 内部历史同步"""
+    # 清空 ChatLogic 的历史
+    st.session_state.chat.history.clear()
+    
+    # 重建历史：将 st.session_state.messages 转换为 ChatLogic.history 格式
+    for msg in st.session_state.messages:
+        st.session_state.chat.history.append({
+            "role": msg["role"],
+            "content": msg["content"]
+        })
+
+sync_chat_history()  # 在每次脚本运行时同步
+
 st.title("📚 Study Companion")
 st.caption("HKBU | Local AI Study Assistant powered by Ollama + RAG")
 
@@ -102,7 +118,12 @@ if user_input:
     # 显示用户消息
     with st.chat_message("user"):
         st.markdown(user_input)
+    
+    # 【关键修复】先将用户消息添加到 st.session_state.messages
     st.session_state.messages.append({"role": "user", "content": user_input})
+    
+    # 【关键修复】再次同步历史，确保 ChatLogic 有最新的消息记录
+    sync_chat_history()
     
     # 调用后端处理
     with st.chat_message("assistant"):
@@ -123,6 +144,9 @@ if user_input:
         "content": result["response"],
         "cited_docs": result["cited_docs"]
     })
+    
+    # 【关键修复】最后再同步一次，确保新的助手响应也在 ChatLogic 的历史中
+    sync_chat_history()
 
 # ====================== 学习计划生成器 ======================
 st.markdown("### 📅 Generate Study Plan")
@@ -144,6 +168,10 @@ with st.container():
                     f"Goal: {study_goal}. "
                     f"Intensity: {intensity}."
                 )
+                
+                # 【关键修复】一样要同步历史
+                sync_chat_history()
+                
                 # 直接走同一个 RAG 管道（自动识别为 plan 模式）
                 result = st.session_state.chat.process_query(
                     query=plan_query,
@@ -161,6 +189,9 @@ with st.container():
                 "content": result["response"],
                 "cited_docs": result["cited_docs"]
             })
+            
+            # 【关键修复】再次同步
+            sync_chat_history()
         else:
             st.warning("⚠️ Please fill in Available Time and Study Goal.")
 
