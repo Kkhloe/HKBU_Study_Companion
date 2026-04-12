@@ -202,15 +202,21 @@ class GenerationConfig:
                 ]
             },
             "plan": {
-                "temperature": 0.7,         # Medium: creative planning
-                "top_p": 0.95,
-                "top_k": 50,
-                "num_predict": 800,
-                "guidance_prefix": "Let me create a structured study plan:",
+                "temperature": 0.3,         # Very low: precise, consistent, structured output
+                "top_p": 0.85,
+                "top_k": 30,
+                "num_predict": 1200,
+                "guidance_prefix": "Let me create a detailed, day-by-day study plan using the specific course content:",
                 "constraints": [
-                    "Make the plan time-bound",
-                    "Include specific milestones",
-                    "Be realistic and achievable"
+                    "CONSISTENCY: Use identical time format across ALL days (never mix hours and minutes)",
+                    "CONTENT MAP: Extract all core topics from the context and create a content map",
+                    "DAILY ALLOCATION: Evenly distribute core content across the specified days",
+                    "SPECIFICITY: Each day must reference actual chapters, sections, or specific topics from the context",
+                    "PROGRESSION: Organize by learning complexity (fundamentals first, advanced concepts later)",
+                    "CONCRETE TASKS: For each day, specify exact materials (chapters/pages) and practice problems to complete",
+                    "TERMINOLOGY: Use only course terminology and concepts mentioned in the provided context",
+                    "PRACTICE: Include specific exercises, coding problems, or assessments mentioned in the course",
+                    "HEADERS: Format day headers as 'Day N (X hours)' consistently throughout"
                 ]
             },
             "brainstorm": {
@@ -298,6 +304,26 @@ class PromptManager:
                 "• Never make up information outside the provided context\n"
                 "• If information is missing or unclear, explicitly state this"
             ),
+            "plan_instruction": (
+                "STUDY PLAN REQUIREMENTS:\n"
+                "1. TIME FORMAT CONSISTENCY:\n"
+                "   • Use THE SAME TIME FORMAT throughout the entire plan (e.g., if user says '3 hours/day', always write 'hours')"
+                "   • Never mix formats like '3 hours' and '120 minutes' in the same plan\n"
+                "2. CORE CONTENT EXTRACTION AND ALLOCATION:\n"
+                "   • Identify ALL core topics/concepts from the provided course context\n"
+                "   • Group related topics by learning area or level of complexity\n"
+                "   • Distribute core content across days: each day should cover 15-20% of the total content\n"
+                "   • Start with foundational concepts, progress to advanced topics\n"
+                "3. SPECIFIC LEARNING ASSIGNMENTS:\n"
+                "   • For EACH DAY, list specific chapters/sections to read (e.g., 'Chapter 3: Neural Networks, pages 45-67')\n"
+                "   • For EACH SESSION, specify concrete learning objectives extracted from context\n"
+                "   • Include specific practice problems, code implementations, or exercises from the course\n"
+                "   • Reference exact page numbers or section names when mentioned in context\n"
+                "4. FORMATTING:\n"
+                "   • Use consistent header format for each day (e.g., 'Day 1 (3 hours)', 'Day 2 (3 hours)', etc.)\n"
+                "   • Within each day, break down by hour or major topic with specific content\n"
+                "   • Use bullet points for clarity and readability"
+            ),
             "response_format": (
                 "RESPONSE FORMAT:\n"
                 "• Start with a direct answer\n"
@@ -306,7 +332,8 @@ class PromptManager:
             ),
             "history_format": "PREVIOUS CONVERSATION:\n{content}",
             "query_format": "CURRENT QUESTION:\n{content}",
-            "context_format": "RELEVANT CONTEXT:\n{content}"
+            "context_format": "RELEVANT CONTEXT:\n{content}",
+            "user_constraints": "USER CONSTRAINTS:\n{content}"
         }
     
     def create_elements(
@@ -315,9 +342,23 @@ class PromptManager:
         context_str: str,
         history: List[Dict],
         mode: str = "qa",
-        include_history: bool = True
+        include_history: bool = True,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None
     ) -> List[PromptElement]:
-        """Create list of prompt elements"""
+        """Create list of prompt elements
+        
+        Args:
+            query: User query
+            context_str: Retrieved context
+            history: Conversation history
+            mode: Task mode (qa, plan, brainstorm, summarize)
+            include_history: Include conversation history
+            user_time: Available time (e.g., "2 hours/day", "1 week")
+            user_goals: User's learning goals (e.g., "pass the exam", "understand AI concepts")
+            user_workload: Current workload (e.g., "heavy", "3 other courses")
+        """
         elements = []
         
         elements.append(PromptElement(
@@ -336,6 +377,16 @@ class PromptManager:
             required=True
         ))
         
+        # Add special instructions for planning tasks
+        if mode == "plan":
+            elements.append(PromptElement(
+                name="plan_rules",
+                template=self.templates["plan_instruction"],
+                token_estimate=100,
+                priority=ElementPriority.HIGH,
+                required=True
+            ))
+        
         elements.append(PromptElement(
             name="response_format",
             template=self.templates["response_format"],
@@ -352,6 +403,48 @@ class PromptManager:
             priority=ElementPriority.HIGH,
             required=True
         ))
+        
+        if user_time or user_goals or user_workload:
+            constraints_parts = []
+            if user_time:
+                constraints_parts.append(f"Available time: {user_time}")
+            if user_goals:
+                constraints_parts.append(f"Goals: {user_goals}")
+            if user_workload:
+                constraints_parts.append(f"Current workload: {user_workload}")
+            
+            constraints_text = "\n".join(constraints_parts)
+            elements.append(PromptElement(
+                name="user_constraints",
+                template=self.templates["user_constraints"],
+                content=constraints_text,
+                token_estimate=len(constraints_text.split()) + 10,
+                priority=ElementPriority.HIGH if mode == "plan" else ElementPriority.MEDIUM,
+                required=False
+            ))
+        
+        # For PLAN mode, add content mapping guidance to extract and allocate core topics
+        if mode == "plan":
+            content_mapping_guidance = (
+                "CONTENT MAPPING FOR STUDY PLAN:\n"
+                "Before creating the plan, identify:\n"
+                "1. Core Topics: List all major topics/chapters mentioned in the context\n"
+                "2. Sequence: Order them from foundational to advanced\n"
+                "3. Allocation: Distribute evenly across the available days\n"
+                "4. Daily Details: For each day, specify EXACT sections, page ranges, and practice items\n\n"
+                "Example format:\n"
+                "Day 1 (3 hours): Chapter 2: Fundamentals (pages 10-35) + Exercises 2.1-2.3\n"
+                "Day 2 (3 hours): Chapter 3: Core Algorithms (pages 36-65) + Lab Assignment 3\n"
+                "etc."
+            )
+            elements.append(PromptElement(
+                name="content_mapping",
+                template=content_mapping_guidance,
+                content="",
+                token_estimate=120,
+                priority=ElementPriority.HIGH,
+                required=True
+            ))
         
         if include_history and history:
             history_text = "\n".join([
@@ -385,7 +478,10 @@ class PromptManager:
         context_str: str,
         history: List[Dict],
         mode: str = "qa",
-        token_budget: Optional[TokenBudget] = None
+        token_budget: Optional[TokenBudget] = None,
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None
     ) -> Tuple[str, Dict]:
         """Assemble complete prompt with budget-aware assembly and generation control
         
@@ -395,6 +491,9 @@ class PromptManager:
             history: Conversation history
             mode: Task mode (qa, plan, brainstorm, summarize)
             token_budget: Token budget (optional)
+            user_time: Available time for the task (e.g., "2 hours/day", "1 week")
+            user_goals: User's learning goals (e.g., "pass exam", "master concepts")
+            user_workload: Current workload context (e.g., "heavy", "3 other courses")
         
         Returns:
             (assembled_prompt, metadata)
@@ -410,7 +509,10 @@ class PromptManager:
             context_str=context_str,
             history=history,
             mode=mode,
-            include_history=len(history) > 0
+            include_history=len(history) > 0,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload
         )
         
         strategy = PromptAssemblyStrategy(max_context_tokens=self.max_prompt_tokens)
@@ -444,10 +546,24 @@ class PromptManager:
         query: str,
         context_str: str,
         history: List[Dict],
-        mode: str = "qa"
+        mode: str = "qa",
+        user_time: Optional[str] = None,
+        user_goals: Optional[str] = None,
+        user_workload: Optional[str] = None
     ) -> str:
-        """Simple version: return prompt directly (backward compatible)"""
-        prompt, _ = self.assemble_prompt(query, context_str, history, mode)
+        """Simple version: return prompt directly (backward compatible)
+        
+        Args:
+            user_time: Available time
+            user_goals: Learning goals
+            user_workload: Current workload
+        """
+        prompt, _ = self.assemble_prompt(
+            query, context_str, history, mode,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload
+        )
         return prompt
     
     @staticmethod

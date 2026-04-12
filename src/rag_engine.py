@@ -78,9 +78,14 @@ class LexicalRetriever:
                 "metadata": chunk["metadata"]
             })
     
-    def retrieve(self, query: str, top_k: int = 3) -> List[Tuple[float, List[str], Dict]]:
+    def retrieve(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> List[Tuple[float, List[str], Dict]]:
         """
         Retrieve chunks matching the query
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize (from user_goals)
         
         Returns:
             List of (score, matched_keywords, chunk_dict)
@@ -88,9 +93,22 @@ class LexicalRetriever:
         query_tokens = tokenize(query)
         query_counter = Counter(query_tokens)
         
-        # Extract course code from query (e.g., "COMP7810")
-        course_code_match = re.search(r'\b(COMP\d+)\b', query.upper())
-        query_course_code = course_code_match.group(1) if course_code_match else None
+        # Extract course code from query - support "COMP7810" or "COMP 7810" format
+        course_code_match = re.search(r'\b(COMP\s*\d+)\b', query.upper())
+        query_course_code = course_code_match.group(1).replace(' ', '') if course_code_match else None
+        
+        # Combine with explicitly provided course codes (from user_goals)
+        target_course_codes = set()
+        if query_course_code:
+            target_course_codes.add(query_course_code)
+        if course_codes:
+            for code in course_codes:
+                # Handle both "COMP7045" and "COMP 7045" formats
+                code_match = re.search(r'\b(COMP\s*\d+)\b', code.upper())
+                if code_match:
+                    # Normalize to COMP#### format (remove spaces)
+                    normalized = code_match.group(1).replace(' ', '')
+                    target_course_codes.add(normalized)
         
         scored_results = []
         
@@ -105,11 +123,12 @@ class LexicalRetriever:
                 for word in overlap
             )
             
-            # BOOST SCORE if course code matches
-            if query_course_code:
-                source_path = chunk_info["metadata"].get("source_path", "")
-                if query_course_code in source_path.upper():
+            # BOOST SCORE if ANY of the target course codes match
+            source_path = chunk_info["metadata"].get("source_path", "")
+            for course_code in target_course_codes:
+                if course_code in source_path.upper():
                     score += 100  # Strong boost for course code match
+                    break  # Avoid multiple boosts for same chunk
             
             scored_results.append((
                 score, 
@@ -124,9 +143,15 @@ class LexicalRetriever:
         scored_results.sort(key=lambda x: x[0], reverse=True)
         return scored_results[:top_k]
     
-    def answer_with_context(self, query: str, top_k: int = 3) -> Tuple[str, List[Dict]]:
-        """Return formatted context string and retrieved chunks"""
-        results = self.retrieve(query, top_k)
+    def answer_with_context(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
+        """Return formatted context string and retrieved chunks
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize
+        """
+        results = self.retrieve(query, top_k, course_codes=course_codes)
         
         if not results:
             return "No relevant information found.", []
@@ -177,24 +202,49 @@ class NeuralRetriever:
         norm2 = np.linalg.norm(vec2)
         return dot / (norm1 * norm2) if norm1 != 0 and norm2 != 0 else 0.0
 
-    def retrieve(self, query: str, top_k: int = 3) -> List[Tuple[float, Dict]]:
+    def retrieve(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> List[Tuple[float, Dict]]:
+        """
+        Retrieve chunks matching the query
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize (from user_goals)
+        
+        Returns:
+            List of (similarity_score, chunk_dict)
+        """
         query_emb = ollama.embeddings(model=EMBED_MODEL, prompt=query)["embedding"]
         
-        # Extract course code from query (e.g., "COMP7810")
-        course_code_match = re.search(r'\b(COMP\d+)\b', query.upper())
-        query_course_code = course_code_match.group(1) if course_code_match else None
+        # Extract course code from query - support "COMP7810" or "COMP 7810" format
+        course_code_match = re.search(r'\b(COMP\s*\d+)\b', query.upper())
+        query_course_code = course_code_match.group(1).replace(' ', '') if course_code_match else None
+        
+        # Combine with explicitly provided course codes (from user_goals)
+        target_course_codes = set()
+        if query_course_code:
+            target_course_codes.add(query_course_code)
+        if course_codes:
+            for code in course_codes:
+                # Handle both "COMP7045" and "COMP 7045" formats
+                code_match = re.search(r'\b(COMP\s*\d+)\b', code.upper())
+                if code_match:
+                    # Normalize to COMP#### format (remove spaces)
+                    normalized = code_match.group(1).replace(' ', '')
+                    target_course_codes.add(normalized)
         
         scored_results = []
 
         for i, emb_info in enumerate(self.embeddings):
             similarity = self._cosine_similarity(query_emb, emb_info)
             
-            # BOOST SIMILARITY if course code matches
-            if query_course_code:
-                source_path = self.chunks[i]["metadata"].get("source_path", "")
-                if query_course_code in source_path.upper():
-                    similarity += 0.3  # Significant boost for course code match (normalized to 0-1 range)
+            # BOOST SIMILARITY if ANY of the target course codes match
+            source_path = self.chunks[i]["metadata"].get("source_path", "")
+            for course_code in target_course_codes:
+                if course_code in source_path.upper():
+                    similarity += 0.3  # Significant boost for course code match (from user_goals)
                     similarity = min(similarity, 1.0)  # Cap at 1.0
+                    break  # Avoid multiple boosts for same chunk
             
             scored_results.append((
                 similarity,
@@ -208,8 +258,15 @@ class NeuralRetriever:
         scored_results.sort(key=lambda x: x[0], reverse=True)
         return scored_results[:top_k]
 
-    def answer_with_context(self, query: str, top_k: int = 3) -> Tuple[str, List[Dict]]:
-        results = self.retrieve(query, top_k)
+    def answer_with_context(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
+        """Return formatted context string and retrieved chunks
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize
+        """
+        results = self.retrieve(query, top_k, course_codes=course_codes)
         if not results:
             return "No relevant information found.", []
 
@@ -272,11 +329,25 @@ class RAGEngine:
         print(f"Embeddings cached to {cache_path}")
         return embeddings
 
-    def lexical_search(self, query: str, top_k: int = 3) -> Tuple[str, List[Dict]]:
-        return self.lexical.answer_with_context(query, top_k)
+    def lexical_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
+        """Lexical search with optional course code prioritization
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize (from user_goals)
+        """
+        return self.lexical.answer_with_context(query, top_k, course_codes=course_codes)
 
-    def neural_search(self, query: str, top_k: int = 3) -> Tuple[str, List[Dict]]:
-        return self.neural.answer_with_context(query, top_k)
+    def neural_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
+        """Neural search with optional course code prioritization
+        
+        Args:
+            query: Search query
+            top_k: Number of results to return
+            course_codes: Additional course codes to prioritize (from user_goals)
+        """
+        return self.neural.answer_with_context(query, top_k, course_codes=course_codes)
 
     def compare_retrievers(self, query: str, top_k: int = 3) -> Dict:
         """A comparative experiment interface specifically designed for evaluation.ipynb"""
