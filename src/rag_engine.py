@@ -88,6 +88,10 @@ class LexicalRetriever:
         query_tokens = tokenize(query)
         query_counter = Counter(query_tokens)
         
+        # Extract course code from query (e.g., "COMP7810")
+        course_code_match = re.search(r'\b(COMP\d+)\b', query.upper())
+        query_course_code = course_code_match.group(1) if course_code_match else None
+        
         scored_results = []
         
         for chunk_info in self.chunk_tokens:
@@ -95,10 +99,17 @@ class LexicalRetriever:
             if not overlap:
                 continue
             
+            # Base score from keyword overlap
             score = sum(
                 min(query_counter[word], chunk_info["counter"][word]) 
                 for word in overlap
             )
+            
+            # BOOST SCORE if course code matches
+            if query_course_code:
+                source_path = chunk_info["metadata"].get("source_path", "")
+                if query_course_code in source_path.upper():
+                    score += 100  # Strong boost for course code match
             
             scored_results.append((
                 score, 
@@ -168,10 +179,23 @@ class NeuralRetriever:
 
     def retrieve(self, query: str, top_k: int = 3) -> List[Tuple[float, Dict]]:
         query_emb = ollama.embeddings(model=EMBED_MODEL, prompt=query)["embedding"]
+        
+        # Extract course code from query (e.g., "COMP7810")
+        course_code_match = re.search(r'\b(COMP\d+)\b', query.upper())
+        query_course_code = course_code_match.group(1) if course_code_match else None
+        
         scored_results = []
 
         for i, emb_info in enumerate(self.embeddings):
             similarity = self._cosine_similarity(query_emb, emb_info)
+            
+            # BOOST SIMILARITY if course code matches
+            if query_course_code:
+                source_path = self.chunks[i]["metadata"].get("source_path", "")
+                if query_course_code in source_path.upper():
+                    similarity += 0.3  # Significant boost for course code match (normalized to 0-1 range)
+                    similarity = min(similarity, 1.0)  # Cap at 1.0
+            
             scored_results.append((
                 similarity,
                 {

@@ -1,12 +1,6 @@
 """
 RAG Document Pre-processing Script
-功能: 加载 PDF/TXT → 两种切分方式 → 增强元数据 → 输出 JSONL
-优化点:
-- 输出统一到 data/ 目录（与项目结构一致）
-- 支持 --build-both 一键生成 natural + sliding 两种 chunks
-- 精简 langchain 导入，增加清晰中文日志
-- 修复 compare 模式重复加载问题
-- 更友好的 CLI 和默认参数
+Loads PDF/TXT → Splits with two methods → Enhances metadata → Outputs JSONL
 """
 
 from __future__ import annotations
@@ -17,14 +11,11 @@ import argparse
 from pathlib import Path
 from typing import List, Literal
 
-# Langchain is only imported when needed
 from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
 
-# ============================================================================
-# Auxiliary functions
-# ============================================================================
+# Utility functions
 def clean_text(text: str) -> str:
     if not text:
         return text
@@ -63,9 +54,6 @@ def get_doc_id_from_filename(filename: str) -> str:
     parts = [p for p in parts if p]
     return f"{parts[0]}_001" if parts else "document_001"
 
-# ============================================================================
-# 1. Load document
-# ============================================================================
 def load_documents(folder_path: str) -> List[Document]:
     folder = Path(folder_path)
     if not folder.exists():
@@ -75,7 +63,7 @@ def load_documents(folder_path: str) -> List[Document]:
     docs: List[Document] = []
     files = [p for p in folder.rglob("*") if p.suffix.lower() in ['.pdf', '.txt']]
 
-    print(f"[INFO] {len(files)} document files were found.")
+    print(f"Found {len(files)} document files")
     for file_path in files:
         try:
             if file_path.suffix.lower() == '.pdf':
@@ -103,21 +91,18 @@ def load_documents(folder_path: str) -> List[Document]:
                 doc.metadata = meta
                 docs.append(doc)
             
-            print(f"[OK] Loaded: {file_path.name}")
+            print(f"Loaded: {file_path.name}")
         except Exception as e:
-            print(f"[WARNING] Failed to load {file_path.name}: {e}")
+            print(f"Failed to load {file_path.name}: {e}")
     return docs
 
-# ============================================================================
-# 2. Segmentation function
-# ============================================================================
 def sliding_window(docs: List[Document], chunk_size: int = 500, overlap: int = 100) -> List[Document]:
-    print(f"[INFO] Using sliding Window chunking (size={chunk_size}, overlap={overlap})")
+    print(f"Sliding window chunking (size={chunk_size}, overlap={overlap})")
     splitter = CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap, separator="")
     return _split_documents(docs, splitter, "sliding")
 
 def natural(docs: List[Document], chunk_size: int = 500, overlap: int = 100) -> List[Document]:
-    print(f"[INFO] Using Natural Boundary chunking (size={chunk_size}, overlap={overlap})")
+    print(f"Natural boundary chunking (size={chunk_size}, overlap={overlap})")
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
@@ -136,12 +121,10 @@ def _split_documents(docs: List[Document], splitter, method: str) -> List[Docume
             chunk.metadata['chunk_index'] = i
             chunk.metadata['chunk_id'] = f"{doc.metadata.get('doc_id', 'doc')}chunk{i:03d}"
             chunks.append(chunk)
-    print(f"[INFO] {method} Splitting complete, totaling {len(chunks)} chunks.")
+    print(f"{method.capitalize()} splitting complete: {len(chunks)} chunks")
     return chunks
 
-# ============================================================================
-# 3. Enhance metadata 
-# ============================================================================
+
 def enhance_metadata(docs: List[Document]) -> List[Document]:
     for doc in docs:
         m = doc.metadata
@@ -162,18 +145,15 @@ def save_as_jsonl(docs: List[Document], output_path: str) -> None:
         for doc in docs:
             obj = {'page_content': doc.page_content, 'metadata': doc.metadata}
             f.write(json.dumps(obj, ensure_ascii=False) + '\n')
-    print(f"[OK] Saved {len(docs)} chunks → {output_file}")
+    print(f"Saved {len(docs)} chunks to {output_file}")
 
-# ============================================================================
-# 4. Main processing flow
-# ============================================================================
 def prepare_chunks(folder_path: str, method: Literal["natural", "sliding"] = "natural",
                    chunk_size: int = 500, overlap: int = 100) -> List[Document]:
-    print(f"\n{'='*70}\n📄 Document Pre-processing starts \nMethod: {method} | size={chunk_size} | overlap={overlap}\n{'='*70}")
+    print(f"\nDocument preprocessing: method={method}, size={chunk_size}, overlap={overlap}")
     
     docs = load_documents(folder_path)
     if not docs:
-        print("[ERROR] No documents loaded")
+        print("Error: No documents loaded")
         return []
 
     if method == "sliding":
@@ -182,12 +162,10 @@ def prepare_chunks(folder_path: str, method: Literal["natural", "sliding"] = "na
         chunks = natural(docs, chunk_size, overlap)
 
     chunks = enhance_metadata(chunks)
-    print(f"\n[DONE] Total: {len(chunks)} chunks\n{'='*70}")
+    print(f"Total: {len(chunks)} chunks")
     return chunks
 
-# ============================================================================
-# 5. Comparison of Segmentation Methods
-# ============================================================================
+
 def calculate_boundary_cut_ratio(chunks: List[Document]) -> float:
     if not chunks:
         return 0.0
@@ -210,13 +188,10 @@ def calculate_boundary_cut_ratio(chunks: List[Document]) -> float:
     return boundary_cuts / len(chunks)
 
 def compare_chunking_methods(folder_path: str) -> str:
-    print("\n" + "="*60)
-    print("Comparing Chunking Methods")
-    print("="*60)
-
+    print("\nComparing chunking methods...")
     original_docs = load_documents(folder_path)
     if not original_docs:
-        print("[ERROR] No documents loaded")
+        print("Error: No documents loaded")
         return "natural"
 
     chunks_sliding = sliding_window(original_docs)
@@ -242,10 +217,7 @@ def compare_chunking_methods(folder_path: str) -> str:
     ratio_sliding = calculate_boundary_cut_ratio(chunks_sliding)
     ratio_natural = calculate_boundary_cut_ratio(chunks_natural)
 
-    print("\n" + "="*60)
-    print("Comparison Results")
-    print("="*60)
-    print(f"{'Metric':<25} {'Sliding Window':<18} {'Natural Boundary':<18}")
+    print(f"\n{'Metric':<25} {'Sliding Window':<18} {'Natural Boundary':<18}")
     print("-" * 61)
     print(f"{'Total chunks':<25} {stats_sliding['count']:<18} {stats_natural['count']:<18}")
     print(f"{'Average length':<25} {stats_sliding['avg_len']:<18} {stats_natural['avg_len']:<18}")
@@ -254,27 +226,22 @@ def compare_chunking_methods(folder_path: str) -> str:
     print(f"{'Boundary-cut ratio':<25} {ratio_sliding:<18.2%} {ratio_natural:<18.2%}")
 
     recommended = "natural" if ratio_natural <= ratio_sliding else "sliding"
-    print(f"\n[RECOMMENDED] Method: {recommended}")
-    print("="*60)
+    print(f"\nRecommended: {recommended}")
     return recommended
 
-# ============================================================================
-# 6. CLI Main Entry
-# ============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="HKBU Study Companion - Document preprocessing tools")
-    parser.add_argument('--input', '-i', default='data', help='Enter the folder (default: data)')
+    parser = argparse.ArgumentParser(description="HKBU Study Companion - Document preprocessing")
+    parser.add_argument('--input', '-i', default='data', help='Input folder (default: data)')
     parser.add_argument('--chunker', '-m', choices=['natural', 'sliding'], default='natural')
     parser.add_argument('--chunk-size', type=int, default=500)
     parser.add_argument('--overlap', type=int, default=50)
-    parser.add_argument('--out', '-o', help='Output JSONL path (automatically saved to data/ by default)')
-    parser.add_argument('--build-both', action='store_true', help='Generate both natural and sliding versions with one click.')
+    parser.add_argument('--out', '-o', help='Output JSONL path')
+    parser.add_argument('--build-both', action='store_true', help='Generate both chunking methods')
     
     args = parser.parse_args()
     input_path = Path(args.input)
 
     if args.build_both:
-        print("[MODE] Generate two splitting methods with one click...")
         for method in ["natural", "sliding"]:
             chunks = prepare_chunks(str(input_path), method=method, 
                                   chunk_size=args.chunk_size, overlap=args.overlap)
@@ -282,16 +249,12 @@ def main():
             save_as_jsonl(chunks, out_path)
         return
 
-    # Normal mode
     if args.out:
         chunks = prepare_chunks(str(input_path), method=args.chunker,
                               chunk_size=args.chunk_size, overlap=args.overlap)
         save_as_jsonl(chunks, args.out)
     else:
-        # Default comparison mode
-        print("[MODE] Comparison of the two splitting methods...")
-        recommended = compare_chunking_methods(str(input_path))  
-        print(f"\n[RECOMMENDED] Recommended method: {recommended}")
+        recommended = compare_chunking_methods(str(input_path))
 
 if __name__ == "__main__":
     main()
