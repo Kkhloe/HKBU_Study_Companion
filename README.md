@@ -208,13 +208,13 @@ streamlit run src/app.py
 On the Sidebar, you can choose whether to use ReAct for deep thinking, and you can adjust the number of thinking steps:
 <figure>
   <img src="screenshot/Enable_ReAct_Reasoning.png" alt="Enable ReAct Reasoning Panel" style="width: 400px;">
-  <figcaption><strong>Fig. 1:</strong> Sidebar ReAct Control Panel</figcaption>
+  <figcaption><strong>Fig:</strong> Sidebar ReAct Control Panel</figcaption>
 </figure>
 
 You can expand here to show detailed reasoning steps:
 <figure>
   <img src="screenshot/Show_Reasoning_Steps.png" alt="Show Reasoning Steps" style="width: 700px;">
-  <figcaption><strong>Fig. 1:</strong> Show Reasoning Step</figcaption>
+  <figcaption><strong>Fig:</strong> Show Reasoning Step</figcaption>
 </figure>
 
 ## Introduction of LLM-as-a-Judge
@@ -226,7 +226,7 @@ You can expand here to show detailed reasoning steps:
 
 <figure>
   <img src="screenshot/LLM_as_a_judge.png" alt="LLM_as_a_judge" style="width: 700px;">
-  <figcaption><strong>Fig. 1:</strong> LLM_as_a_judge</figcaption>
+  <figcaption><strong>Fig:</strong> LLM_as_a_judge</figcaption>
 </figure>
 
 ### Purpose
