@@ -3,6 +3,7 @@ Chat Logic for HKBU Study Companion
 
 """
 
+import re
 import ollama
 from typing import List, Dict, Optional
 
@@ -19,6 +20,21 @@ DEFAULT_GENERATION_MODEL = "gemma3:4b"
 
 # Keep last N chat messages (user+assistant pairs count as 2 messages each).
 HISTORY_MAX_MESSAGES = 12
+
+# HKBU-style course codes appearing in user text or syllabus citations (e.g. COMP7300, COMP7125)
+_COURSE_CODE_RE = re.compile(r"\b(COMP\d{4}[A-Z]?)\b", re.IGNORECASE)
+
+# Follow-ups that should reuse the last retrieval (reformat prior answer, not a new topic search)
+_REUSE_CONTEXT_RE = re.compile(
+    r"(?i)\b("
+    r"rewrite|re-?write|rephrase|"
+    r"one\s+short\s+paragraph|in\s+one\s+paragraph|"
+    r"shorter|more\s+concise|briefly|"
+    r"same\s+answer\s+but|format\s+as\s+a\s+paragraph|"
+    r"translate\s+(the\s+)?(above|previous|last)|"
+    r"turn\s+(the\s+)?(above|last)\s+into"
+    r")\b"
+)
 
 # --- Reference text (docs/tests; not sent to the model unless you import and use it) ---
 STUDY_PLAN_ASSISTANT_OUTPUT_GUIDELINES = """
@@ -48,8 +64,43 @@ class ChatLogic:
             "total_tokens": 0,
             "queries_processed": 0
         }
+        # Multi-turn RAG: last successful retrieval (for rewrite-style follow-ups)
+        self._last_context_str: Optional[str] = None
+        self._last_retrieved_chunks: Optional[List[Dict]] = None
 
     # --- Internal helpers ---
+
+    def _history_blob(self) -> str:
+        return " ".join(m.get("content", "") for m in self.history)
+
+    @staticmethod
+    def _extract_course_codes(*texts: str) -> List[str]:
+        seen = set()
+        ordered: List[str] = []
+        for t in texts:
+            for m in _COURSE_CODE_RE.findall(t or ""):
+                u = m.upper()
+                if u not in seen:
+                    seen.add(u)
+                    ordered.append(u)
+        return ordered[:6]
+
+    def _build_retrieval_query(self, query: str) -> str:
+        """
+        Expand the user query with course codes mentioned in the current turn or prior history
+        so follow-ups like "narrow that to assessment" still retrieve the same course.
+        """
+        codes = self._extract_course_codes(query, self._history_blob())
+        if not codes:
+            return query.strip()
+        return f"{' '.join(codes)} {query}".strip()
+
+    def _should_reuse_last_retrieval(self, query: str) -> bool:
+        if not self._last_context_str or not self.history:
+            return False
+        if len(self.history) < 2:
+            return False
+        return _REUSE_CONTEXT_RE.search(query.strip()) is not None
 
     def _append_history_turn(self, query: str, assistant_text: str) -> None:
         """Append one user/assistant exchange and trim to HISTORY_MAX_MESSAGES."""
@@ -128,7 +179,8 @@ class ChatLogic:
         if hasattr(self, "react_engine") and getattr(self, "react_enabled", False):
             # 使用 ReAct 推理（与主链路使用同一生成模型）
             self.react_engine.model = resolved_model
-            context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
+            rq = self._build_retrieval_query(query)
+            context_str, retrieved_chunks = self.rag.neural_search(rq, top_k=top_k)
             react_result = self.react_engine.reason(query, context=context_str)
             result = {
                 "response": react_result["final_answer"],
@@ -153,11 +205,22 @@ class ChatLogic:
             self._accumulate_token_stats(result)
             return result
 
-        # 普通模式
-        if retrieval_type == "lexical":
-            context_str, retrieved_chunks = self.rag.lexical_search(query, top_k=top_k)
+        # 普通模式：检索查询带课程码（多轮）；改写类跟进可复用上一轮 context
+        context_reused = False
+        if self._should_reuse_last_retrieval(query):
+            context_str = self._last_context_str or ""
+            retrieved_chunks = list(self._last_retrieved_chunks or [])
+            retrieval_query = "(reused previous turn context)"
+            context_reused = True
         else:
-            context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
+            retrieval_query = self._build_retrieval_query(query)
+            if retrieval_type == "lexical":
+                context_str, retrieved_chunks = self.rag.lexical_search(retrieval_query, top_k=top_k)
+            else:
+                context_str, retrieved_chunks = self.rag.neural_search(retrieval_query, top_k=top_k)
+            if update_history:
+                self._last_context_str = context_str
+                self._last_retrieved_chunks = retrieved_chunks
 
         if token_budget is None:
             token_budget = TokenBudget(
@@ -198,6 +261,8 @@ class ChatLogic:
             "context_used": len(retrieved_chunks),
             "budget_info": token_budget.get_budget_info(),
             "model": resolved_model,
+            "retrieval_query": retrieval_query,
+            "context_reused": context_reused,
         }
         if user_time or user_goals or user_workload:
             result["user_constraints"] = {
@@ -349,6 +414,8 @@ class ChatLogic:
     def clear_history(self):
         """Clear multi-turn conversation history (e.g., before a new demo or isolated task)."""
         self.history.clear()
+        self._last_context_str = None
+        self._last_retrieved_chunks = None
 
     def get_token_stats(self) -> Dict:
         """Get token usage statistics"""
