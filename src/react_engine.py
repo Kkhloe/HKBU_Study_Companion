@@ -88,8 +88,8 @@ class ReActEngine:
         """Set completion callback"""
         self.on_complete = callback
 
-    def _generate_thought(self, query: str, context: str, prev_steps: str = "") -> str:
-        """Use LLM to generate thinking step"""
+    def _generate_thought(self, query: str, context: str, prev_steps: str = "") -> Tuple[str, dict]:
+        """Use LLM to generate thinking step, return (thought, token_info)"""
         prompt = f"""You are a reasoning assistant for HKBU Study Companion.
 Analyze the user's query step by step.
 
@@ -99,7 +99,7 @@ Context: {context}
 {f"Previous steps: {prev_steps}" if prev_steps else ""}
 
 Provide your thought on what needs to be done next. Be concise."""
-        
+
         response = ollama.generate(
             model=self.model,
             prompt=prompt,
@@ -109,7 +109,12 @@ Provide your thought on what needs to be done next. Be concise."""
                 "top_p": 0.9,
             }
         )
-        return response["response"].strip()
+        token_info = {
+            "prompt_tokens": response.get("prompt_eval_count", 0),
+            "completion_tokens": response.get("eval_count", 0),
+            "total_tokens": response.get("prompt_eval_count", 0) + response.get("eval_count", 0)
+        }
+        return response["response"].strip(), token_info
 
     def _parse_action(self, llm_output: str) -> Tuple[Optional[ActionType], str]:
         """Parse action and parameters from LLM output"""
@@ -118,7 +123,6 @@ Provide your thought on what needs to be done next. Be concise."""
         # Pattern matching (simplified)
         if "search" in llm_lower or "retrieve" in llm_lower or "find" in llm_lower:
             action_type = ActionType.SEARCH
-            # Extract search keywords
             action_input = llm_output.split("search")[-1].strip() if "search" in llm_lower else llm_output[:100]
         elif "analyze" in llm_lower or "examine" in llm_lower:
             action_type = ActionType.ANALYZE
@@ -179,19 +183,25 @@ Provide your thought on what needs to be done next. Be concise."""
         
         self.steps = []
         prev_steps_summary = ""
-        
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
+
         for step_num in range(1, self.max_steps + 1):
             step = ThinkingStep(step_num)
-            
             # 1. Generate thought
-            step.thought = self._generate_thought(query, context, prev_steps_summary)
-            
+            thought, token_info = self._generate_thought(query, context, prev_steps_summary)
+            step.thought = thought
+            total_prompt_tokens += token_info["prompt_tokens"]
+            total_completion_tokens += token_info["completion_tokens"]
+            total_tokens += token_info["total_tokens"]
+
             # 2. Parse action
             step.action, step.action_input = self._parse_action(step.thought)
-            
+
             # 3. Execute action
             step.observation = self._execute_action(step.action, step.action_input, query)
-            
+
             # 4. Check if conclusion is reached
             if step.action == ActionType.SYNTHESIZE or "final" in step.thought.lower():
                 step.is_final = True
@@ -199,38 +209,47 @@ Provide your thought on what needs to be done next. Be concise."""
                 if self.on_step:
                     self.on_step(step)
                 break
-            
+
             self.steps.append(step)
             if self.on_step:
                 self.on_step(step)
-            
-            # Accumulate step info for next round
+
             prev_steps_summary += f"\nStep {step_num}: {step.thought[:100]}"
-        
+
         # Build final answer
         if self.steps:
             final_step = self.steps[-1]
-            final_answer = final_step.observation if final_step.is_final else self._synthesize_answer()
+            if final_step.is_final:
+                final_answer = final_step.observation
+                final_answer_tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            else:
+                final_answer, final_answer_tokens = self._synthesize_answer()
+                total_prompt_tokens += final_answer_tokens["prompt_tokens"]
+                total_completion_tokens += final_answer_tokens["completion_tokens"]
+                total_tokens += final_answer_tokens["total_tokens"]
         else:
             final_answer = "No reasoning steps completed."
-        
+
         result = {
             "final_answer": final_answer,
             "reasoning_steps": [s.to_dict() for s in self.steps],
             "total_steps": len(self.steps),
             "success": len(self.steps) > 0,
-            "query": query
+            "query": query,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens
         }
-        
+
         if self.on_complete:
             self.on_complete(result)
-        
+
         return result
 
-    def _synthesize_answer(self) -> str:
-        """Synthesize final answer from all steps"""
+    def _synthesize_answer(self) -> Tuple[str, dict]:
+        """Synthesize final answer from all steps, return (answer, token_info)"""
         if not self.steps:
-            return "Unable to generate answer."
+            return "Unable to generate answer.", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
         observations = [s.observation for s in self.steps]
         prompt = f"""Based on the following reasoning steps, provide a final comprehensive answer:
@@ -238,7 +257,7 @@ Provide your thought on what needs to be done next. Be concise."""
 {chr(10).join(observations)}
 
 Final Answer:"""
-        
+
         response = ollama.generate(
             model=self.model,
             prompt=prompt,
@@ -247,7 +266,14 @@ Final Answer:"""
                 "num_predict": 500,
             }
         )
-        return response["response"].strip()
+
+        token_info = {
+            "prompt_tokens": response.get("prompt_eval_count", 0),
+            "completion_tokens": response.get("eval_count", 0),
+            "total_tokens": response.get("prompt_eval_count", 0) + response.get("eval_count", 0)
+        }
+
+        return response["response"].strip(), token_info
 
     def get_reasoning_trace(self) -> str:
         """Get human-readable reasoning process"""

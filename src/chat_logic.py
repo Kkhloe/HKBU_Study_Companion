@@ -5,8 +5,8 @@ Chat Logic for HKBU Study Companion
 
 import ollama
 from typing import List, Dict, Optional
-from .rag_engine import RAGEngine
-from .prompt_manager import PromptManager, GenerationConfig, TokenBudget
+from rag_engine import RAGEngine
+from prompt_manager import PromptManager, GenerationConfig, TokenBudget
 
 # --- Generation defaults ---
 DEFAULT_GENERATION_MODEL = "gemma3:4b"
@@ -108,6 +108,34 @@ class ChatLogic:
         """
         mode = self._detect_mode(query)
 
+        # 判断是否启用 ReAct
+        if hasattr(self, "react_engine") and getattr(self, "react_enabled", False):
+            # 使用 ReAct 推理
+            context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
+            react_result = self.react_engine.reason(query, context=context_str)
+            result = {
+                "response": react_result["final_answer"],
+                "reasoning_enabled": True,
+                "reasoning_steps": react_result["reasoning_steps"],
+                "reasoning_trace": self.react_engine.get_reasoning_trace(),
+                "prompt_tokens": react_result.get("prompt_tokens", 0),
+                "completion_tokens": react_result.get("completion_tokens", 0),
+                "total_tokens": react_result.get("total_tokens", 0),
+                "mode": mode,
+                "retrieval_type": retrieval_type,
+                "cited_docs": list(dict.fromkeys([
+                    chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
+                    for chunk in retrieved_chunks
+                ])),
+                "context_used": len(retrieved_chunks),
+                "budget_info": {"note": "ReAct reasoning mode"}
+            }
+            if update_history:
+                self._append_history_turn(query, react_result["final_answer"])
+            self._accumulate_token_stats(result)
+            return result
+
+        # 普通模式
         if retrieval_type == "lexical":
             context_str, retrieved_chunks = self.rag.lexical_search(query, top_k=top_k)
         else:
@@ -118,7 +146,6 @@ class ChatLogic:
                 total_budget=4096,
                 reserved_for_output=800 if mode == "qa" else 1000
             )
-        
         prompt, prompt_metadata = self.prompt_manager.assemble_prompt(
             query=query,
             context_str=context_str,
@@ -126,18 +153,14 @@ class ChatLogic:
             mode=mode,
             token_budget=token_budget
         )
-
         gen_config = GenerationConfig(mode=mode)
         gen_params = gen_config.get_generation_params()
-        
         response = ollama.generate(
             model=DEFAULT_GENERATION_MODEL,
             prompt=prompt,
             options=gen_params
         )
-
         response_text = response["response"].strip()
-        
         result = {
             "response": response_text,
             "prompt_tokens": response.get("prompt_eval_count", 0),
@@ -147,26 +170,22 @@ class ChatLogic:
             ),
             "mode": mode,
             "retrieval_type": retrieval_type,
-            "cited_docs": list(dict.fromkeys([  # Deduplicate while preserving order
+            "cited_docs": list(dict.fromkeys([
                 chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
                 for chunk in retrieved_chunks
             ])),
             "context_used": len(retrieved_chunks),
             "budget_info": token_budget.get_budget_info()
         }
-
         if return_metadata:
             result["metadata"] = {
                 "prompt_metadata": prompt_metadata,
                 "generation_config": gen_config.to_dict(),
                 "full_prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
             }
-
         if update_history:
             self._append_history_turn(query, response_text)
-
         self._accumulate_token_stats(result)
-
         return result
 
     # --- Baselines (no-RAG / retrieval comparisons) ---
@@ -233,6 +252,14 @@ class ChatLogic:
         return {"lexical": lexical, "neural": neural}
 
     # --- Advanced / utilities ---
+    def enable_react(self, react_engine):
+        """启用 ReAct 推理引擎"""
+        self.react_engine = react_engine
+        self.react_enabled = True
+
+    def disable_react(self):
+        """关闭 ReAct"""
+        self.react_enabled = False
 
     def process_query_advanced(
         self,

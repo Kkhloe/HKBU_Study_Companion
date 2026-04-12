@@ -230,34 +230,34 @@ Generate the study plan now.
             st.warning("⚠️ Please fill in Available Time and Study Goal.")
 
 # ====================== LLM-as-a-Judge 评判区 ======================
-st.markdown("### ⚖️ LLM-as-a-Judge ")
-if st.session_state.messages:
-    # 查找最近一条 assistant 回复和对应 user 问题
-    last_user = None
-    last_assistant = None
-    for msg in reversed(st.session_state.messages):
-        if msg["role"] == "assistant" and last_assistant is None:
-            last_assistant = msg
-        elif msg["role"] == "user" and last_user is None:
-            last_user = msg
-        if last_user and last_assistant:
-            break
-    if last_user and last_assistant:
-        with st.expander("🔍 Judge the Last AI Answer"):
-            if st.button("Run LLM Judge", key="judge_btn", use_container_width=True):
-                with st.spinner("LLM is evaluating the answer..."):
-                    # 获取上下文（可选：拼接最近检索内容）
-                    context = ""
-                    judge_result = st.session_state.chat.judge_response(
-                        query=last_user["content"],
-                        answer=last_assistant["content"],
-                        context=context
-                    )
-                st.success(f"Score: {judge_result.get('score','?')}")
-                st.markdown(f"**Reasoning:** {judge_result.get('reasoning','')}")
-                st.markdown(f"**Suggestion:** {judge_result.get('suggestion','')}")
-            else:
-                st.info("Click the button to evaluate the latest AI response.")
+# st.markdown("### ⚖️ LLM-as-a-Judge ")
+# if st.session_state.messages:
+#     # 查找最近一条 assistant 回复和对应 user 问题
+#     last_user = None
+#     last_assistant = None
+#     for msg in reversed(st.session_state.messages):
+#         if msg["role"] == "assistant" and last_assistant is None:
+#             last_assistant = msg
+#         elif msg["role"] == "user" and last_user is None:
+#             last_user = msg
+#         if last_user and last_assistant:
+#             break
+#     if last_user and last_assistant:
+#         with st.expander("🔍 Judge the Last AI Answer"):
+#             if st.button("Run LLM Judge", key="judge_btn", use_container_width=True):
+#                 with st.spinner("LLM is evaluating the answer..."):
+#                     # 获取上下文（可选：拼接最近检索内容）
+#                     context = ""
+#                     judge_result = st.session_state.chat.judge_response(
+#                         query=last_user["content"],
+#                         answer=last_assistant["content"],
+#                         context=context
+#                     )
+#                 st.success(f"Score: {judge_result.get('score','?')}")
+#                 st.markdown(f"**Reasoning:** {judge_result.get('reasoning','')}")
+#                 st.markdown(f"**Suggestion:** {judge_result.get('suggestion','')}")
+#             else:
+#                 st.info("Click the button to evaluate the latest AI response.")
 
 # 页脚
 st.caption("Built with Ollama + Local RAG | FSC 801CD Compatible")
