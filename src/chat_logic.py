@@ -4,81 +4,64 @@ Chat Logic for HKBU Study Companion
 """
 
 import ollama
-from typing import List, Dict, Tuple, Optional, Callable
-from rag_engine import RAGEngine
-from prompt_manager import PromptManager, GenerationConfig, TokenBudget
-from LLM_judge_engine import JudgeEngine
+from typing import List, Dict, Optional
+from .rag_engine import RAGEngine
+from .prompt_manager import PromptManager, GenerationConfig, TokenBudget
 
+# --- Generation defaults ---
+DEFAULT_GENERATION_MODEL = "gemma3:4b"
+
+# Keep last N chat messages (user+assistant pairs count as 2 messages each).
+HISTORY_MAX_MESSAGES = 12
+
+# --- Reference text (docs/tests; not sent to the model unless you import and use it) ---
+STUDY_PLAN_ASSISTANT_OUTPUT_GUIDELINES = """
+Expected assistant structure for study-plan responses (see PromptManager plan templates):
+- Per day: which course(s), hours, concrete knowledge points from syllabus/context
+- Per knowledge point: target mastery (e.g., Familiar / Proficient / Exam-ready or Bloom level)
+- Assumptions, risk flags, citations and cited_docs as before
+"""
 
 
 class ChatLogic:
+    """
+    Conversation orchestration: mode detection, RAG retrieval, prompt assembly, and generation.
+
+    ``history`` stores prior user/assistant turns so follow-up queries (e.g., updating a plan)
+    are evaluated with conversation context. Uses ``ollama.generate`` with
+    ``DEFAULT_GENERATION_MODEL``.
+    """
+
     def __init__(self, rag_engine: RAGEngine, prompt_manager: PromptManager):
         self.rag = rag_engine
         self.prompt_manager = prompt_manager
-        self.history: List[Dict] = [] # History of Multi-Turn Dialogue
+        self.history: List[Dict] = []
         self.token_usage_stats = {
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
             "total_tokens": 0,
             "queries_processed": 0
-        }  
-        self.judge_engine = JudgeEngine()
-        
-        # ==================== Hook System (Plugin-style ReAct Interface) ====================
-        """
-        Hook points supported (plugin-style ReAct integration):
-        - on_before_retrieval: before retrieval hook
-        - on_after_retrieval: after retrieval hook
-        - on_before_generation: before generation hook
-        - on_after_generation: after generation hook
+        }
 
-        """
-        self.use_react = False                 # Whether to enable ReAct reasoning
-        self.react_engine = None               # ReAct engine instance
-        
-        # Hook callback functions
-        self.on_before_retrieval: Optional[Callable[[str], None]] = None
-        self.on_after_retrieval: Optional[Callable[[str, List[Dict]], None]] = None
-        self.on_before_generation: Optional[Callable[[str, str], None]] = None
-        self.on_after_generation: Optional[Callable[[str], None]] = None
+    # --- Internal helpers ---
 
-    def judge_response(self, query, answer, context=""):
-        return self.judge_engine.judge(query, answer, context)
-    
-    def enable_react(self, react_engine: 'ReActEngine'):
-        """Enable ReAct reasoning engine"""
-        from react_engine import ReActEngine
-        self.react_engine = react_engine
-        self.use_react = True
-        # Register search callback for the ReAct engine
-        self.react_engine.set_search_callback(self._react_search_callback)
-    
-    def disable_react(self):
-        """Disable ReAct reasoning engine"""
-        self.use_react = False
-        self.react_engine = None
-    
-    def _react_search_callback(self, query: str) -> Tuple[str, List[Dict]]:
-        """Search callback used by ReAct engine"""
-        context_str, chunks = self.rag.neural_search(query, top_k=3)
-        return context_str, chunks
-    
-    def register_hook(self, hook_name: str, callback: Callable):
-        """Register custom hook"""
-        valid_hooks = [
-            'on_before_retrieval',
-            'on_after_retrieval',
-            'on_before_generation',
-            'on_after_generation'
-        ]
-        if hook_name in valid_hooks:
-            setattr(self, hook_name, callback)
-        else:
-            raise ValueError(f"Unknown hook: {hook_name}. Valid hooks: {valid_hooks}")
+    def _append_history_turn(self, query: str, assistant_text: str) -> None:
+        """Append one user/assistant exchange and trim to HISTORY_MAX_MESSAGES."""
+        self.history.append({"role": "user", "content": query})
+        self.history.append({"role": "assistant", "content": assistant_text})
+        if len(self.history) > HISTORY_MAX_MESSAGES:
+            self.history = self.history[-HISTORY_MAX_MESSAGES:]
 
+    def _accumulate_token_stats(self, result: Dict) -> None:
+        self.token_usage_stats["total_prompt_tokens"] += result["prompt_tokens"]
+        self.token_usage_stats["total_completion_tokens"] += result["completion_tokens"]
+        self.token_usage_stats["total_tokens"] += result["total_tokens"]
+        self.token_usage_stats["queries_processed"] += 1
+
+    # --- Mode detection ---
 
     def _detect_mode(self, query: str) -> str:
-        """Auto-detect task mode: qa, plan, brainstorm, or summarize"""
+        """Auto-detect task mode: qa, plan, brainstorm, or summarize (keyword-based)."""
         query_lower = query.lower()
         
         plan_keywords = [
@@ -98,6 +81,8 @@ class ChatLogic:
         
         return "qa"
 
+    # --- Main path: retrieve → assemble prompt → generate ---
+
     def process_query(
         self,
         query: str,
@@ -105,48 +90,27 @@ class ChatLogic:
         top_k: int = 3,
         return_metadata: bool = False,
         token_budget: Optional[TokenBudget] = None,
-        use_react_override: Optional[bool] = None
+        update_history: bool = True,
     ) -> Dict:
-        """Process user query: detect mode, retrieve context, assemble prompt, generate response
         """
+        Process one user turn: detect mode, retrieve context, assemble prompt, generate response.
 
+        Conversation memory: prior turns in ``self.history`` are passed to the prompt manager
+        so multi-turn flows (e.g., revising a study plan) work like the notebook demo.
+        Set ``update_history=False`` when running side-by-side baselines so one query does not duplicate turns.
+
+        Returns a dict including:
+        - response: model text
+        - prompt_tokens, completion_tokens, total_tokens: from Ollama eval counts
+        - mode, retrieval_type, cited_docs, context_used, budget_info
+        - metadata (if return_metadata): prompt assembly and generation config details
         """
-        Complete Processing Flow (Feedforward Pass + Application Loop):
-        1. Retrieval (lexical / neural) + hook support
-        2. Prompt assembly
-        3. Generation control (temperature + num_predict) + optional ReAct reasoning
-        4. Update dialogue history
-        5. Return results with token and citation
-        
-        Parameters:
-        - use_react_override: temporarily override global ReAct setting
-        """
-        
-        # Determine whether to use ReAct
-        use_react = use_react_override if use_react_override is not None else self.use_react
-        
-        # ============ If ReAct is enabled, use reasoning pipeline ============
-        if use_react and self.react_engine:
-            return self._process_query_with_react(query, retrieval_type, top_k)
-        
-        # ============ Otherwise, use original standard flow (fully compatible) ============
-        mode = self._detect_mode(query)
-
-        # 1. Retrieval + pre-hook
-        if self.on_before_retrieval:
-            self.on_before_retrieval(query)
-        
-
         mode = self._detect_mode(query)
 
         if retrieval_type == "lexical":
             context_str, retrieved_chunks = self.rag.lexical_search(query, top_k=top_k)
         else:
             context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
-        
-        # Post-hook
-        if self.on_after_retrieval:
-            self.on_after_retrieval(query, retrieved_chunks)
 
         if token_budget is None:
             token_budget = TokenBudget(
@@ -165,26 +129,14 @@ class ChatLogic:
         gen_config = GenerationConfig(mode=mode)
         gen_params = gen_config.get_generation_params()
         
-        # 3. Generation Control + pre-hook
-        if self.on_before_generation:
-            self.on_before_generation(query, context_str)
-        
-        temperature = 0.0 if mode == "qa" else 0.7
-        
-        
         response = ollama.generate(
-            model="gemma3:4b",
+            model=DEFAULT_GENERATION_MODEL,
             prompt=prompt,
             options=gen_params
         )
 
-        # Post-hook
-        if self.on_after_generation:
-            self.on_after_generation(response["response"].strip())
-
         response_text = response["response"].strip()
         
-        # 4. Results Processing
         result = {
             "response": response_text,
             "prompt_tokens": response.get("prompt_eval_count", 0),
@@ -194,12 +146,11 @@ class ChatLogic:
             ),
             "mode": mode,
             "retrieval_type": retrieval_type,
-            "cited_docs": list(dict.fromkeys([
+            "cited_docs": list(dict.fromkeys([  # Deduplicate while preserving order
                 chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
                 for chunk in retrieved_chunks
             ])),
             "context_used": len(retrieved_chunks),
-            "reasoning_enabled": False,
             "budget_info": token_budget.get_budget_info()
         }
 
@@ -210,72 +161,77 @@ class ChatLogic:
                 "full_prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
             }
 
-        # 5. Update conversation history (Conversation Management)
-        self.history.append({"role": "user", "content": query})
-        self.history.append({"role": "assistant", "content": response_text})
+        if update_history:
+            self._append_history_turn(query, response_text)
 
-        if len(self.history) > 12:
-            self.history = self.history[-12:]
-
-        self.token_usage_stats["total_prompt_tokens"] += result["prompt_tokens"]
-        self.token_usage_stats["total_completion_tokens"] += result["completion_tokens"]
-        self.token_usage_stats["total_tokens"] += result["total_tokens"]
-        self.token_usage_stats["queries_processed"] += 1
+        self._accumulate_token_stats(result)
 
         return result
 
-    def _process_query_with_react(
+    # --- Baselines (no-RAG / retrieval comparisons) ---
+
+    def process_query_no_rag(
         self,
         query: str,
-        retrieval_type: str,
-        top_k: int,
-        token_budget=None  # 把 token budget 加进来
+        update_history: bool = True,
     ) -> Dict:
         """
-        ReAct reasoning pipeline with advanced token budget control
-        整合：ReAct 分步推理 + 高级 Token 预算管理
+        Baseline generation without retrieved documents (no local context), for no-RAG vs RAG comparison.
+        Matches the minimal prompt style used in ``notebooks/evaluation_update.ipynb`` / ``evaluation.py``.
         """
-        # 获取初始上下文
-        if retrieval_type == "lexical":
-            init_context, init_chunks = self.rag.lexical_search(query, top_k=top_k)
-        else:
-            init_context, init_chunks = self.rag.neural_search(query, top_k=top_k)
-        
-        # 执行 ReAct 推理
-        react_result = self.react_engine.reason(
-            query=query,
-            context=init_context,
-            retrieval_callback=lambda q: self.rag.neural_search(q, top_k=top_k)
+        mode = self._detect_mode(query)
+        prompt = f"You are HKBU Study Companion.\nUser: {query}\nAssistant: "
+        response = ollama.generate(
+            model=DEFAULT_GENERATION_MODEL,
+            prompt=prompt,
+            options={"temperature": 0.0, "num_predict": 600},
         )
-        
-        # 构建返回结果（同时保留 token 信息 + ReAct 信息）
+        response_text = response["response"].strip()
         result = {
-            "response": react_result["final_answer"],
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "mode": self._detect_mode(query),
-            "retrieval_type": retrieval_type,
-            "cited_docs": [
-                chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
-                for chunk in init_chunks
-            ],
-            "context_used": len(init_chunks),
-            "reasoning_enabled": True,
-            "reasoning_steps": react_result["reasoning_steps"],
-            "reasoning_trace": self.react_engine.get_reasoning_trace(),
-            "budget_info": token_budget.get_budget_info() if token_budget else None  # 整合预算
+            "response": response_text,
+            "prompt_tokens": response.get("prompt_eval_count", 0),
+            "completion_tokens": response.get("eval_count", 0),
+            "total_tokens": (
+                response.get("prompt_eval_count", 0) + response.get("eval_count", 0)
+            ),
+            "mode": mode,
+            "retrieval_type": "none",
+            "cited_docs": [],
+            "context_used": 0,
+            "budget_info": {"note": "no-RAG baseline; no TokenBudget assembly"},
         }
-        
-        # 更新对话历史
-        self.history.append({"role": "user", "content": query})
-        self.history.append({"role": "assistant", "content": result["response"]})
-        
-        if len(self.history) > 12:
-            self.history = self.history[-12:]
-        
+
+        if update_history:
+            self._append_history_turn(query, response_text)
+
+        self._accumulate_token_stats(result)
+
         return result
 
+    def compare_no_rag_vs_rag(
+        self,
+        query: str,
+        retrieval_type: str = "neural",
+        top_k: int = 3,
+    ) -> Dict:
+        """Run no-RAG and RAG on the same query without appending duplicate history entries."""
+        no_rag = self.process_query_no_rag(query, update_history=False)
+        rag = self.process_query(
+            query, retrieval_type=retrieval_type, top_k=top_k, update_history=False
+        )
+        return {"no_rag": no_rag, "rag": rag}
+
+    def compare_lexical_vs_neural(self, query: str, top_k: int = 3) -> Dict:
+        """Run lexical and neural RAG on the same query without appending duplicate history entries."""
+        lexical = self.process_query(
+            query, retrieval_type="lexical", top_k=top_k, update_history=False
+        )
+        neural = self.process_query(
+            query, retrieval_type="neural", top_k=top_k, update_history=False
+        )
+        return {"lexical": lexical, "neural": neural}
+
+    # --- Advanced / utilities ---
 
     def process_query_advanced(
         self,
@@ -285,21 +241,23 @@ class ChatLogic:
         max_prompt_tokens: int = 3200,
         max_output_tokens: int = 800
     ) -> Dict:
-        """高级查询入口：自动使用 ReAct + Token 预算"""
+        """Advanced query processing with custom token budgets; calls process_query with return_metadata=True."""
         token_budget = TokenBudget(
             total_budget=max_prompt_tokens + max_output_tokens,
             reserved_for_output=max_output_tokens
         )
-
-        # 直接调用整合后的 ReAct 函数
-        return self._process_query_with_react(
+        
+        return self.process_query(
             query=query,
             retrieval_type=retrieval_type,
             top_k=top_k,
-            token_budget=token_budget  # 传入预算
+            return_metadata=True,
+            token_budget=token_budget,
+            update_history=True,
         )
+
     def clear_history(self):
-        """Clear conversation history"""
+        """Clear multi-turn conversation history (e.g., before a new demo or isolated task)."""
         self.history.clear()
 
     def get_token_stats(self) -> Dict:
