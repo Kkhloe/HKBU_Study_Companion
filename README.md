@@ -201,7 +201,7 @@ Run the full HKBU_Study_Companion application with integrated ReAct:
 ```bash
 # Run the full Streamlit application
 streamlit run src/app.py
-
+```
 ---
 
 ### Display of operation results
@@ -245,4 +245,4 @@ judge = JudgeEngine(model="gemma3:12b")
 result = judge.judge(query="What is RAG?", answer="RAG means ...", context="...")
 print(result)
 # Output: {'score': 4, 'reasoning': 'Answer is mostly correct...', 'suggestion': 'Add more detail...'}
-
+```
