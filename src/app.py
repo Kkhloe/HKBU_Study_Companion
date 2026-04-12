@@ -143,7 +143,8 @@ if user_input:
         with st.spinner("Thinking..."):
             result = st.session_state.chat.process_query(
                 query=user_input,
-                retrieval_type=retrieval_type
+                retrieval_type=retrieval_type,
+                model=model_name,
             )
         
         st.markdown(result["response"])
@@ -163,7 +164,14 @@ if user_input:
                     st.code(result["reasoning_trace"], language="text")
         
         st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
-        st.caption(f"📊 Tokens: {result['total_tokens']} | Mode: {result['mode'].upper()}")
+        rq = result.get("retrieval_query", "")
+        reuse = result.get("context_reused", False)
+        extra = f" | Model: {result.get('model', model_name)}"
+        if reuse:
+            extra += " | Context: reused from last turn"
+        elif rq and rq != user_input.strip():
+            extra += f" | Search: {rq[:120]}{'…' if len(rq) > 120 else ''}"
+        st.caption(f"📊 Tokens: {result['total_tokens']} | Mode: {result['mode'].upper()}{extra}")
     
     st.session_state.messages.append({
         "role": "assistant",
@@ -211,7 +219,11 @@ Generate the study plan now.
                 result = st.session_state.chat.process_query(
                     query=plan_query,
                     retrieval_type=retrieval_type,
-                    use_react_override=False
+                    use_react_override=False,
+                    model=model_name,
+                    user_time=time_limit,
+                    user_goals=study_goal,
+                    user_workload=intensity,
                 )
             
             st.success(f"🎯 Study Plan for: {study_goal}")
