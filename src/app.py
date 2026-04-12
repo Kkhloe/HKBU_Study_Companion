@@ -3,7 +3,6 @@ import streamlit as st
 import ollama
 from pathlib import Path
 
-# 导入我们优化后的后端模块
 from src.rag_engine import RAGEngine
 from src.prompt_manager import PromptManager
 from src.chat_logic import ChatLogic
@@ -33,39 +32,31 @@ h1 {font-weight: 400; color: #1D1D1F; letter-spacing: -0.5px;}
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== 初始化后端（只初始化一次） ======================
 if "rag" not in st.session_state:
-    with st.spinner("🚀 正在加载 RAG 引擎和知识库..."):
-        # 默认使用 natural 切分（boundary-cut ratio 更低，推荐）
+    with st.spinner("🚀 Loading RAG Engine and Knowledge Base..."):
         st.session_state.rag = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
         st.session_state.pm = PromptManager()
         st.session_state.chat = ChatLogic(st.session_state.rag, st.session_state.pm)
         st.session_state.messages = []
 
-# ====================== 同步消息历史：保持 ChatLogic.history 与 UI 消息同步 ======================
-# 这是多轮对话的关键：每次重新运行时，重新构建 ChatLogic 的历史
 def sync_chat_history():
-    """将 Streamlit UI 消息与 ChatLogic 内部历史同步"""
-    # 清空 ChatLogic 的历史
+    """Sync Streamlit UI messages with ChatLogic internal history"""
     st.session_state.chat.history.clear()
     
-    # 重建历史：将 st.session_state.messages 转换为 ChatLogic.history 格式
     for msg in st.session_state.messages:
         st.session_state.chat.history.append({
             "role": msg["role"],
             "content": msg["content"]
         })
 
-sync_chat_history()  # 在每次脚本运行时同步
+sync_chat_history()
 
 st.title("📚 Study Companion")
 st.caption("HKBU | Local AI Study Assistant powered by Ollama + RAG")
 
-# ====================== 侧边栏设置 ======================
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     
-    # 模型选择
     st.markdown("##### Model")
     model_name = st.selectbox(
         label="",
@@ -74,7 +65,6 @@ with st.sidebar:
         label_visibility="collapsed"
     )
     
-    # 检索方式
     st.markdown("##### Retrieval Mode")
     retrieval_method = st.selectbox(
         label="",
@@ -84,48 +74,39 @@ with st.sidebar:
     )
     retrieval_type = "neural" if "Neural" in retrieval_method else "lexical"
     
-    # 生成参数
     st.markdown("##### Generation")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.0 if "qa" else 0.7, step=0.1)
     
-    # 文档管理
     st.markdown("##### Knowledge Base")
     if st.button("🔄 Rebuild Index (Natural)", use_container_width=True):
-        with st.spinner("正在重建索引..."):
+        with st.spinner("Rebuilding index..."):
             st.session_state.rag = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
-        st.success("索引已重建！")
+        st.success("Index rebuilt!")
     if st.button("🔄 Rebuild Index (Sliding)", use_container_width=True):
-        with st.spinner("正在重建索引..."):
+        with st.spinner("Rebuilding index..."):
             st.session_state.rag = RAGEngine(chunk_file="chunks_sliding_500_50.jsonl")
-        st.success("索引已重建！")
+        st.success("Index rebuilt!")
     
-    st.info("📁 文档位于 `data/` 文件夹\n使用 `document_processor.py` 预处理")
+    st.info("📁 Documents in `data/` folder. Use `document_processor.py` to preprocess.")
 
-# ====================== 主对话区 ======================
 st.markdown("### 💬 Chat with Your Documents")
 
-# 显示历史消息
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "cited_docs" in msg:
             st.caption(f"📌 Sources: {', '.join(msg['cited_docs'])}")
 
-# 用户输入
 user_input = st.chat_input("Ask anything about HKBU courses, policies, or study plans...")
 
 if user_input:
-    # 显示用户消息
     with st.chat_message("user"):
         st.markdown(user_input)
     
-    # 【关键修复】先将用户消息添加到 st.session_state.messages
     st.session_state.messages.append({"role": "user", "content": user_input})
     
-    # 【关键修复】再次同步历史，确保 ChatLogic 有最新的消息记录
     sync_chat_history()
     
-    # 调用后端处理
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             result = st.session_state.chat.process_query(
@@ -133,19 +114,16 @@ if user_input:
                 retrieval_type=retrieval_type
             )
         
-        # 显示回答
         st.markdown(result["response"])
         st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
         st.caption(f"📊 Tokens: {result['total_tokens']} | Mode: {result['mode'].upper()}")
     
-    # 保存到历史（带引用信息）
     st.session_state.messages.append({
         "role": "assistant",
         "content": result["response"],
         "cited_docs": result["cited_docs"]
     })
     
-    # 【关键修复】最后再同步一次，确保新的助手响应也在 ChatLogic 的历史中
     sync_chat_history()
 
 # ====================== 学习计划生成器 ======================
@@ -182,7 +160,6 @@ with st.container():
             st.markdown(result["response"])
             st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
             
-            # 同时加入聊天记录
             st.session_state.messages.append({"role": "user", "content": plan_query})
             st.session_state.messages.append({
                 "role": "assistant",
@@ -190,10 +167,8 @@ with st.container():
                 "cited_docs": result["cited_docs"]
             })
             
-            # 【关键修复】再次同步
             sync_chat_history()
         else:
             st.warning("⚠️ Please fill in Available Time and Study Goal.")
 
-# 页脚
 st.caption("Built with Ollama + Local RAG | FSC 801CD Compatible")

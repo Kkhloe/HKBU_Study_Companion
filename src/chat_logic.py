@@ -1,7 +1,6 @@
 """
 Chat Logic for HKBU Study Companion
-负责多轮对话、模式识别、RAG 调用、生成控制和 Token 统计
-完全适配优化后的 rag_engine.py 和增强的 prompt_manager.py
+Handles conversation flow, mode detection, RAG calls, and token management
 """
 
 import ollama
@@ -23,36 +22,24 @@ class ChatLogic:
         }
 
     def _detect_mode(self, query: str) -> str:
-        """
-        自动检测任务模式
-        
-        Modes:
-        - "qa": 普通问答
-        - "plan": 学习计划
-        - "brainstorm": 头脑风暴
-        - "summarize": 总结
-        """
+        """Auto-detect task mode: qa, plan, brainstorm, or summarize"""
         query_lower = query.lower()
         
-        # 学习计划检测
         plan_keywords = [
-            "study plan", "plan", "schedule", "schedule", "time table", 
-            "weekly", "2-week", "3-week", "organize", "organize", "plan out"
+            "study plan", "plan", "schedule", "time table", 
+            "weekly", "2-week", "3-week", "organize"
         ]
         if any(k in query_lower for k in plan_keywords):
             return "plan"
         
-        # 总结检测
         summarize_keywords = ["summarize", "summary", "sum up", "condense", "brief", "overview"]
         if any(k in query_lower for k in summarize_keywords):
             return "summarize"
         
-        # 头脑风暴检测
-        brainstorm_keywords = ["ideas", "suggestions", "approaches", "options", "alternatives", "think of"]
+        brainstorm_keywords = ["ideas", "suggestions", "approaches", "options", "alternatives"]
         if any(k in query_lower for k in brainstorm_keywords):
             return "brainstorm"
         
-        # 默认为问答
         return "qa"
 
     def process_query(
@@ -63,45 +50,20 @@ class ChatLogic:
         return_metadata: bool = False,
         token_budget: Optional[TokenBudget] = None
     ) -> Dict:
-        """
-        完整的查询处理流程
-        
-        Flow:
-        1. 模式检测
-        2. 检索（词法/神经）
-        3. Token预算管理
-        4. 提示词组装（使用数据化定义）
-        5. 生成控制（使用GenerationConfig）
-        6. 更新对话历史
-        7. 统计Token和引用
-        
-        Args:
-            query: 用户查询
-            retrieval_type: 检索类型（"neural"或"lexical"）
-            top_k: 检索的上下文数量
-            return_metadata: 是否返回详细的元数据
-            token_budget: 自定义token预算（可选）
-        
-        Returns:
-            结果字典，包含response、tokens、mode等
-        """
-        # 1. 模式检测
+        """Process user query: detect mode, retrieve context, assemble prompt, generate response"""
         mode = self._detect_mode(query)
 
-        # 2. 检索
         if retrieval_type == "lexical":
             context_str, retrieved_chunks = self.rag.lexical_search(query, top_k=top_k)
         else:
             context_str, retrieved_chunks = self.rag.neural_search(query, top_k=top_k)
 
-        # 3. Token预算管理
         if token_budget is None:
             token_budget = TokenBudget(
                 total_budget=4096,
                 reserved_for_output=800 if mode == "qa" else 1000
             )
         
-        # 4. 提示词组装（预算感知）
         prompt, prompt_metadata = self.prompt_manager.assemble_prompt(
             query=query,
             context_str=context_str,
@@ -110,7 +72,6 @@ class ChatLogic:
             token_budget=token_budget
         )
 
-        # 5. 生成控制
         gen_config = GenerationConfig(mode=mode)
         gen_params = gen_config.get_generation_params()
         
@@ -120,7 +81,6 @@ class ChatLogic:
             options=gen_params
         )
 
-        # 6. 结果处理
         response_text = response["response"].strip()
         
         result = {
@@ -140,7 +100,6 @@ class ChatLogic:
             "budget_info": token_budget.get_budget_info()
         }
 
-        # 可选：返回详细元数据
         if return_metadata:
             result["metadata"] = {
                 "prompt_metadata": prompt_metadata,
@@ -148,15 +107,12 @@ class ChatLogic:
                 "full_prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
             }
 
-        # 7. 更新对话历史
         self.history.append({"role": "user", "content": query})
         self.history.append({"role": "assistant", "content": response_text})
 
-        # 历史管理：太长时自动裁剪
-        if len(self.history) > 12:  # 约6轮对话
+        if len(self.history) > 12:
             self.history = self.history[-12:]
 
-        # 8. 更新统计
         self.token_usage_stats["total_prompt_tokens"] += result["prompt_tokens"]
         self.token_usage_stats["total_completion_tokens"] += result["completion_tokens"]
         self.token_usage_stats["total_tokens"] += result["total_tokens"]
@@ -172,9 +128,7 @@ class ChatLogic:
         max_prompt_tokens: int = 3200,
         max_output_tokens: int = 800
     ) -> Dict:
-        """
-        高级查询处理：完整控制所有参数
-        """
+        """Advanced query processing with custom token budgets"""
         token_budget = TokenBudget(
             total_budget=max_prompt_tokens + max_output_tokens,
             reserved_for_output=max_output_tokens
@@ -189,15 +143,15 @@ class ChatLogic:
         )
 
     def clear_history(self):
-        """清空对话历史"""
+        """Clear conversation history"""
         self.history.clear()
 
     def get_token_stats(self) -> Dict:
-        """获取Token使用统计"""
+        """Get token usage statistics"""
         return self.token_usage_stats
 
     def reset_token_stats(self):
-        """重置Token统计"""
+        """Reset token statistics"""
         self.token_usage_stats = {
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
@@ -206,7 +160,7 @@ class ChatLogic:
         }
 
     def get_system_info(self) -> Dict:
-        """获取系统信息"""
+        """Get system information and statistics"""
         return {
             "rag_engine": type(self.rag).__name__,
             "prompt_manager": type(self.prompt_manager).__name__,
