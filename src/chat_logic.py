@@ -5,8 +5,14 @@ Chat Logic for HKBU Study Companion
 
 import ollama
 from typing import List, Dict, Optional
-from rag_engine import RAGEngine
-from prompt_manager import PromptManager, GenerationConfig, TokenBudget
+
+# Notebook: `from src.chat_logic import ChatLogic` (package). App/streamlit: `src` on sys.path (flat).
+try:
+    from .rag_engine import RAGEngine
+    from .prompt_manager import PromptManager, GenerationConfig, TokenBudget
+except ImportError:
+    from rag_engine import RAGEngine
+    from prompt_manager import PromptManager, GenerationConfig, TokenBudget
 
 # --- Generation defaults ---
 DEFAULT_GENERATION_MODEL = "gemma3:4b"
