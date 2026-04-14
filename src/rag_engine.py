@@ -15,11 +15,10 @@ import numpy as np
 # Configuration
 EMBED_MODEL = "nomic-embed-text"
 CHUNKS_DIR = Path("data")          
-VECTOR_DB_DIR = Path("vector_db")  # embeddings cache directory
+VECTOR_DB_DIR = Path("vector_db")
 VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_chunks(chunk_file: str) -> List[Dict]:
-    """Load chunks from JSONL file (supports data/ and output/ directories)"""
     for base_dir in [CHUNKS_DIR, Path("output")]:
         file_path = base_dir / chunk_file
         if file_path.exists():
@@ -38,7 +37,7 @@ def load_chunks(chunk_file: str) -> List[Dict]:
     raise FileNotFoundError(f"Chunk file not found: {chunk_file} (checked data/ and output/)")
 
 
-# Lexical Retriever (keyword matching)
+# Lexical Retriever
 STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "of", "to", "for", "and", "or", "in", "on", "at", "with", "by", "about",
@@ -48,16 +47,12 @@ STOPWORDS = {
 }
 
 def tokenize(text: str) -> List[str]:
-    """Split text into tokens for lexical retrieval"""
     text = text.lower()
     words = re.findall(r"[a-z0-9]+", text)
     return [w for w in words if w not in STOPWORDS and len(w) > 1]
 
 
 class LexicalRetriever:
-    """
-    Lexical Retriever: based on keyword matching (like Ctrl+F)
-    """
     
     def __init__(self, chunks: List[Dict]):
         self.chunks = chunks
@@ -74,24 +69,12 @@ class LexicalRetriever:
             })
     
     def retrieve(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> List[Tuple[float, List[str], Dict]]:
-        """
-        Retrieve chunks matching the query
-        
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            course_codes: Additional course codes to prioritize
-        
-        Returns:
-            List of (score, matched_keywords, chunk_dict)
-        """
         query_tokens = tokenize(query)
         query_counter = Counter(query_tokens)
         
-        # Extract course code from query - support multiple formats
         target_course_codes = set()
         
-        # Support COMP, DAAI, ITM, AIDM formats
+        # Match all common course code patterns
         patterns = [
             r'\b(COMP\s*\d{4})\b',
             r'\b(DAAI\s*\d{4})\b',
@@ -115,18 +98,25 @@ class LexicalRetriever:
             overlap = set(query_counter.keys()) & set(chunk_info["counter"].keys())
             if not overlap:
                 continue
+
+            if target_course_codes:
+                source_path = chunk_info["metadata"].get("source_path", "").upper()
+                keep_chunk = False
+                for code in target_course_codes:
+                    if code in source_path:
+                        keep_chunk = True
+                        break
+                if not keep_chunk:
+                    continue
             
-            # Base score from keyword overlap
-            score = sum(
-                min(query_counter[word], chunk_info["counter"][word]) 
-                for word in overlap
-            )
+            # Base score from token overlap
+            score = sum(min(query_counter[word], chunk_info["counter"][word]) for word in overlap)
             
-            # Boost score if any target course code matches
+            # Boost score for exact course match
             source_path = chunk_info["metadata"].get("source_path", "")
-            for course_code in target_course_codes:
-                if course_code in source_path.upper():
-                    score += 100  # Strong boost for course code match
+            for code in target_course_codes:
+                if code in source_path.upper():
+                    score += 100
                     break
             
             scored_results.append((
@@ -143,7 +133,7 @@ class LexicalRetriever:
         return scored_results[:top_k]
     
     def answer_with_context(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
-        """Return formatted context string and retrieved chunks"""
+        """Return formatted context string and chunks"""
         results = self.retrieve(query, top_k, course_codes=course_codes)
         
         if not results:
@@ -166,8 +156,7 @@ class LexicalRetriever:
         return context_str, retrieved_chunks
 
 
-# Neural Retriever (embedding-based)
-
+# Neural Retriever
 class NeuralRetriever:
     def __init__(self, chunks: List[Dict], embeddings: np.ndarray = None):
         self.chunks = chunks
@@ -194,20 +183,8 @@ class NeuralRetriever:
         return dot / (norm1 * norm2) if norm1 != 0 and norm2 != 0 else 0.0
 
     def retrieve(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> List[Tuple[float, Dict]]:
-        """
-        Retrieve chunks semantically similar to the query
-        
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            course_codes: Additional course codes to prioritize
-        
-        Returns:
-            List of (similarity_score, chunk_dict)
-        """
         query_emb = ollama.embeddings(model=EMBED_MODEL, prompt=query)["embedding"]
         
-        # Extract course code from query - support multiple formats
         target_course_codes = set()
         
         patterns = [
@@ -231,13 +208,22 @@ class NeuralRetriever:
 
         for i, emb_info in enumerate(self.embeddings):
             similarity = self._cosine_similarity(query_emb, emb_info)
+            if target_course_codes:
+                source_path = self.chunks[i]["metadata"].get("source_path", "").upper()
+                keep_chunk = False
+                for code in target_course_codes:
+                    if code in source_path:
+                        keep_chunk = True
+                        break
+                if not keep_chunk:
+                    continue
             
-            # Boost similarity if any target course code matches
+            # Boost similarity for course match
             source_path = self.chunks[i]["metadata"].get("source_path", "")
-            for course_code in target_course_codes:
-                if course_code in source_path.upper():
-                    similarity += 0.3  # Significant boost for course code match
-                    similarity = min(similarity, 1.0)  # Cap at 1.0
+            for code in target_course_codes:
+                if code in source_path.upper():
+                    similarity += 0.3
+                    similarity = min(similarity, 1.0)
                     break
             
             scored_results.append((
@@ -253,7 +239,6 @@ class NeuralRetriever:
         return scored_results[:top_k]
 
     def answer_with_context(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
-        """Return formatted context string and retrieved chunks"""
         results = self.retrieve(query, top_k, course_codes=course_codes)
         if not results:
             return "No relevant information found.", []
@@ -275,15 +260,14 @@ class NeuralRetriever:
 
         return "\n\n".join(context_parts), retrieved_chunks
 
-# RAG Engine
 
+# RAG Engine
 class RAGEngine:
     def __init__(self, chunk_file: str = "chunks_natural_500_50.jsonl"):
         print(f"Initializing RAG Engine with {chunk_file}")
         
         self.chunks = load_chunks(chunk_file)
         self.chunk_file = chunk_file
-
         self.embedding_cache = self._load_or_build_embeddings()
         
         print("Initializing Lexical Retriever...")
@@ -295,14 +279,14 @@ class RAGEngine:
         print(f"RAG Engine ready! ({len(self.chunks)} chunks)")
 
     def _load_or_build_embeddings(self) -> np.ndarray:
-        """embeddings cache: vector_db/{chunk_file}_embeddings.npy"""
+        """Load cached embeddings or generate new ones"""
         cache_path = VECTOR_DB_DIR / f"{self.chunk_file.replace('.jsonl', '_embeddings.npy')}"
         
         if cache_path.exists():
             print(f"Loading cached embeddings from {cache_path}")
             return np.load(cache_path)
         
-        print("No cache found → generating embeddings (this runs only once)...")
+        print("No cache found → generating embeddings...")
         embeddings_list = []
         for i, chunk in enumerate(self.chunks):
             emb = ollama.embeddings(model=EMBED_MODEL, prompt=chunk["text"][:2000])["embedding"]
@@ -316,9 +300,8 @@ class RAGEngine:
         return embeddings
 
     # Course Code Enhancement Methods
-    
     def _extract_course_codes(self, text: str) -> List[str]:
-        """Extract course codes from text. Supports COMP, DAAI, ITM, AIDM formats."""
+        """Extract course codes from text"""
         patterns = [
             r'\b(COMP\s*\d{4})\b',
             r'\b([A-Z]{3,4}\s*\d{4,6})\b',
@@ -330,20 +313,18 @@ class RAGEngine:
         return list(set([m.replace(' ', '') for m in all_matches]))
     
     def _enhance_query_with_course_codes(self, query: str, course_codes: List[str]) -> str:
-        """Enhance query by adding multiple variations of course codes."""
+        """Enhance query with course code variations"""
         if not course_codes:
             return query
         
         enhanced = query
         for code in course_codes:
-            code_num = re.sub(r'[A-Z]+', '', code)  # Extract digits
-            with_space = f"{code[:4]} {code_num}" if len(code) > 4 else f"{code} {code_num}"
-            enhanced += f" {code} {with_space} {code_num}"
-        
+            code_num = re.sub(r'[A-Z]+', '', code)
+            with_space = f"{code[:4]} {code_num}" if len(code) > 4 else code
+            enhanced += f" {code} {with_space}"
         return enhanced
     
     def _filter_chunks_by_course_codes(self, chunks: List[Dict], target_codes: List[str]) -> List[Dict]:
-        """Filter: keep only chunks that belong to target course codes."""
         if not target_codes:
             return chunks
         
@@ -357,7 +338,6 @@ class RAGEngine:
         return filtered
     
     def _deduplicate_chunks(self, chunks: List[Dict]) -> List[Dict]:
-        """Remove duplicate chunks based on chunk id."""
         seen_ids = set()
         unique_chunks = []
         for chunk in chunks:
@@ -367,7 +347,6 @@ class RAGEngine:
         return unique_chunks
     
     def _reformat_context(self, chunks: List[Dict]) -> str:
-        """Reformat filtered chunks back to context string."""
         if not chunks:
             return "No relevant information found."
         
@@ -379,40 +358,18 @@ class RAGEngine:
         return "\n\n".join(parts)
 
     # Public Search Methods
-    
     def lexical_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None, 
                        enable_post_filter: bool = False, deduplicate: bool = True) -> Tuple[str, List[Dict]]:
-        """
-        Lexical search with course code enhancement and deduplication.
-        
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            course_codes: Optional pre-extracted course codes
-            enable_post_filter: If True, filter out non-matching course chunks
-            deduplicate: If True, remove duplicate chunks
-        
-        Returns:
-            (context_string, retrieved_chunks)
-        """
-        # Extract course codes from query
         extracted_codes = self._extract_course_codes(query)
-        
-        # Merge with explicitly provided codes
         all_codes = list(set((course_codes or []) + extracted_codes))
-        
-        # Enhance query with course code variations
         enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
         
-        # Retrieve (get more for deduplication)
         fetch_k = top_k * 2 if deduplicate else top_k
         context, chunks = self.lexical.answer_with_context(enhanced_query, fetch_k, course_codes=all_codes)
         
-        # Optional aggressive post-filtering
         if enable_post_filter and all_codes:
             chunks = self._filter_chunks_by_course_codes(chunks, all_codes)
         
-        # Deduplicate and truncate
         if deduplicate:
             chunks = self._deduplicate_chunks(chunks)
             chunks = chunks[:top_k]
@@ -422,37 +379,16 @@ class RAGEngine:
     
     def neural_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None,
                       enable_post_filter: bool = False, deduplicate: bool = True) -> Tuple[str, List[Dict]]:
-        """
-        Neural search with course code enhancement and deduplication.
-        
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            course_codes: Optional pre-extracted course codes
-            enable_post_filter: If True, filter out non-matching course chunks
-            deduplicate: If True, remove duplicate chunks
-        
-        Returns:
-            (context_string, retrieved_chunks)
-        """
-        # Extract course codes from query
         extracted_codes = self._extract_course_codes(query)
-        
-        # Merge with explicitly provided codes
         all_codes = list(set((course_codes or []) + extracted_codes))
-        
-        # Enhance query with course code variations
         enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
         
-        # Retrieve (get more for deduplication)
         fetch_k = top_k * 2 if deduplicate else top_k
         context, chunks = self.neural.answer_with_context(enhanced_query, fetch_k, course_codes=all_codes)
         
-        # Optional aggressive post-filtering
         if enable_post_filter and all_codes:
             chunks = self._filter_chunks_by_course_codes(chunks, all_codes)
         
-        # Deduplicate and truncate
         if deduplicate:
             chunks = self._deduplicate_chunks(chunks)
             chunks = chunks[:top_k]
@@ -461,27 +397,17 @@ class RAGEngine:
         return context, chunks
     
     def compare_retrievers(self, query: str, top_k: int = 3) -> Dict:
-        """Compare both retrievers (for evaluation)"""
         lexical_context, lexical_chunks = self.lexical_search(query, top_k)
         neural_context, neural_chunks = self.neural_search(query, top_k)
         
         return {
             "query": query,
-            "lexical": {
-                "context": lexical_context, 
-                "chunks": lexical_chunks, 
-                "num_chunks": len(lexical_chunks)
-            },
-            "neural": {
-                "context": neural_context, 
-                "chunks": neural_chunks, 
-                "num_chunks": len(neural_chunks)
-            }
+            "lexical": {"context": lexical_context, "chunks": lexical_chunks, "num_chunks": len(lexical_chunks)},
+            "neural": {"context": neural_context, "chunks": neural_chunks, "num_chunks": len(neural_chunks)}
         }
 
 
 # Test code
-
 if __name__ == "__main__":
     print("=" * 70)
     print("HKBU Study Companion - RAG Engine Test")
@@ -489,12 +415,10 @@ if __name__ == "__main__":
     
     engine = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
     
-    # Test queries with different course code formats
     test_queries = [
         "COMP7045 grading",
         "COMP7530 assessment", 
         "What is the policy for COMP7055?",
-        "COMP7930 project deadline"
     ]
     
     for test_query in test_queries:
@@ -503,13 +427,11 @@ if __name__ == "__main__":
         print("-" * 70)
         
         print("\nLexical Retrieval:")
-        lex_ctx, lex_chunks = engine.lexical_search(test_query, top_k=2, deduplicate=True)
+        lex_ctx, lex_chunks = engine.lexical_search(test_query, top_k=2)
         print(lex_ctx)
         
         print("\nNeural Retrieval:")
-        neu_ctx, neu_chunks = engine.neural_search(test_query, top_k=2, deduplicate=True)
+        neu_ctx, neu_chunks = engine.neural_search(test_query, top_k=2)
         print(neu_ctx)
     
-    print("\n" + "=" * 70)
-    print("Enhancement complete! Ready for integration.")
-    print("=" * 70)
+    print("\n✅ RAG Engine test completed.")

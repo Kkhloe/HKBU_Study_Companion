@@ -5,7 +5,7 @@ from chat_logic import ChatLogic
 def main():
     print("Initialize HKBU Study Companion...")
     
-    rag = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")   # or sliding
+    rag = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")   # default
     pm = PromptManager()
     chat = ChatLogic(rag, pm)
 

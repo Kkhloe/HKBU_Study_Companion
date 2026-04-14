@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
 import json
+import re
 
 
 # ============================================================
@@ -15,26 +16,14 @@ import json
 # ============================================================
 
 class ElementPriority(Enum):
-    """Element priority levels for budget-constrained trimming"""
-    CRITICAL = 4      # Cannot be deleted (system prompt, user query)
-    HIGH = 3           # Core content, preserve when possible
-    MEDIUM = 2         # Optional, can be deleted if needed
-    LOW = 1             # Auxiliary, delete first
+    CRITICAL = 4      # system prompt, user query
+    HIGH = 3         
+    MEDIUM = 2        
+    LOW = 1            
 
 
 @dataclass
 class PromptElement:
-    """Dataified definition of a prompt element
-    
-    Attributes:
-        name: Element name
-        template: Element template (can contain {placeholders})
-        content: Actual content or function that generates the element
-        token_estimate: Estimated tokens for budget management
-        priority: Priority level for trimming when tokens insufficient
-        required: Whether this element must be included
-        parameters: Element parameter dictionary
-    """
     name: str
     template: str
     content: str = ""
@@ -44,7 +33,6 @@ class PromptElement:
     parameters: Dict = field(default_factory=dict)
     
     def render(self, **kwargs) -> Tuple[str, int]:
-        """Render element to text. Returns (rendered_text, estimated_tokens)"""
         try:
             rendered = self.template.format(content=self.content, **kwargs, **self.parameters)
         except (KeyError, IndexError):
@@ -56,40 +44,28 @@ class PromptElement:
 
 @dataclass
 class TokenBudget:
-    """Token budget manager
-    
-    Attributes:
-        total_budget: Total token budget
-        used_tokens: Tokens already used
-        reserved_for_output: Tokens reserved for output
-    """
     total_budget: int = 4096
     used_tokens: int = 0
     reserved_for_output: int = 800
     
     @property
     def available_for_prompt(self) -> int:
-        """Available tokens for prompt"""
         return self.total_budget - self.reserved_for_output - self.used_tokens
     
     @property
     def remaining_budget(self) -> int:
-        """Remaining budget"""
         return max(0, self.available_for_prompt)
     
     def allocate(self, tokens: int) -> bool:
-        """Allocate tokens, return success status"""
         if self.used_tokens + tokens <= self.available_for_prompt:
             self.used_tokens += tokens
             return True
         return False
     
     def reset(self):
-        """Reset budget"""
         self.used_tokens = 0
     
     def get_budget_info(self) -> Dict:
-        """Get budget information"""
         return {
             "total": self.total_budget,
             "used": self.used_tokens,
@@ -100,26 +76,21 @@ class TokenBudget:
 
 
 # ============================================================
-# Part 2: Prompt Assembly Strategy (Budget-aware)
+# Part 2: Prompt Assembly Strategy 
 # ============================================================
 
 class PromptAssemblyStrategy:
-    """Budget-aware prompt assembly strategy with flexible element selection and priority trimming"""
-    
     def __init__(self, max_context_tokens: int = 1500):
         self.max_context_tokens = max_context_tokens
         self.elements: List[PromptElement] = []
     
     def add_element(self, element: PromptElement) -> None:
-        """Add prompt element"""
         self.elements.append(element)
     
     def prioritize_elements(self) -> List[PromptElement]:
-        """Sort elements by priority"""
         return sorted(self.elements, key=lambda e: e.priority.value, reverse=True)
     
     def assemble_with_budget(self, budget: TokenBudget) -> Tuple[str, Dict]:
-        """Budget-aware assembly strategy. Returns (assembled_prompt, metadata)"""
         assembled_parts = []
         element_metadata = {
             "included_elements": [],
@@ -127,6 +98,7 @@ class PromptAssemblyStrategy:
             "total_tokens_used": 0
         }
         
+        # Process critical/required elements first
         critical_elements = [e for e in self.elements if e.required or e.priority == ElementPriority.CRITICAL]
         for elem in critical_elements:
             rendered, tokens = elem.render()
@@ -138,6 +110,7 @@ class PromptAssemblyStrategy:
                     "priority": elem.priority.name
                 })
             else:
+                # Force include if marked as required
                 if elem.required:
                     assembled_parts.append(rendered)
                     element_metadata["included_elements"].append({
@@ -147,6 +120,7 @@ class PromptAssemblyStrategy:
                         "forced": True
                     })
         
+        # Process optional elements in priority order
         optional_elements = [e for e in self.elements 
                             if not e.required and e.priority != ElementPriority.CRITICAL]
         optional_elements.sort(key=lambda e: e.priority.value, reverse=True)
@@ -179,18 +153,14 @@ class PromptAssemblyStrategy:
 # ============================================================
 
 class GenerationConfig:
-    """Generation configuration for different task types"""
-    
     def __init__(self, mode: str = "qa"):
         self.mode = mode
         self.params = self._get_default_params(mode)
     
     def _get_default_params(self, mode: str) -> Dict:
-        """Get default generation parameters by task mode"""
-        
         params_map = {
             "qa": {
-                "temperature": 0.0,         # Low: precise answers
+                "temperature": 0.0,
                 "top_p": 0.9,
                 "top_k": 40,
                 "num_predict": 500,
@@ -202,25 +172,25 @@ class GenerationConfig:
                 ]
             },
             "plan": {
-                "temperature": 0.3,         # Very low: precise, consistent, structured output
+                "temperature": 0.3,
                 "top_p": 0.85,
                 "top_k": 30,
                 "num_predict": 1200,
                 "guidance_prefix": "Let me create a detailed, day-by-day study plan using the specific course content:",
                 "constraints": [
-                    "CONSISTENCY: Use identical time format across ALL days (never mix hours and minutes)",
-                    "CONTENT MAP: Extract all core topics from the context and create a content map",
-                    "DAILY ALLOCATION: Evenly distribute core content across the specified days",
-                    "SPECIFICITY: Each day must reference actual chapters, sections, or specific topics from the context",
-                    "PROGRESSION: Organize by learning complexity (fundamentals first, advanced concepts later)",
-                    "CONCRETE TASKS: For each day, specify exact materials (chapters/pages) and practice problems to complete",
-                    "TERMINOLOGY: Use only course terminology and concepts mentioned in the provided context",
-                    "PRACTICE: Include specific exercises, coding problems, or assessments mentioned in the course",
-                    "HEADERS: Format day headers as 'Day N (X hours)' consistently throughout"
+                    "CONSISTENCY: Use identical time format across ALL days",
+                    "CONTENT MAP: Extract all core topics from the context",
+                    "DAILY ALLOCATION: Evenly distribute core content across days",
+                    "SPECIFICITY: Reference actual chapters/sections/topics",
+                    "PROGRESSION: Fundamentals first, then advanced concepts",
+                    "CONCRETE TASKS: Specify exact materials and practice",
+                    "TERMINOLOGY: Use only course-specific terms",
+                    "PRACTICE: Include mentioned exercises/assessments",
+                    "HEADERS: Use 'Day N (X hours)' format consistently"
                 ]
             },
             "brainstorm": {
-                "temperature": 0.9,         # High: creative brainstorm
+                "temperature": 0.9,
                 "top_p": 0.99,
                 "top_k": 60,
                 "num_predict": 600,
@@ -232,7 +202,7 @@ class GenerationConfig:
                 ]
             },
             "summarize": {
-                "temperature": 0.0,         # Low: precise summary
+                "temperature": 0.0,
                 "top_p": 0.85,
                 "top_k": 30,
                 "num_predict": 300,
@@ -248,7 +218,6 @@ class GenerationConfig:
         return params_map.get(mode, params_map["qa"])
     
     def get_generation_params(self) -> Dict:
-        """Get ollama generation parameters"""
         return {
             "temperature": self.params["temperature"],
             "top_p": self.params["top_p"],
@@ -257,15 +226,12 @@ class GenerationConfig:
         }
     
     def get_guidance_prefix(self) -> str:
-        """Get generation guidance prefix"""
         return self.params.get("guidance_prefix", "")
     
     def get_constraints(self) -> List[str]:
-        """Get task constraints"""
         return self.params.get("constraints", [])
     
     def to_dict(self) -> Dict:
-        """Convert to dictionary"""
         return {
             "mode": self.mode,
             "temperature": self.params["temperature"],
@@ -282,14 +248,11 @@ class GenerationConfig:
 # ============================================================
 
 class PromptManager:
-    """Enhanced prompt manager integrating dataified definitions, budget-aware assembly, and generation control"""
-    
     def __init__(self, max_prompt_tokens: int = 3200):
         self.max_prompt_tokens = max_prompt_tokens
         self.templates = self._load_templates()
     
     def _load_templates(self) -> Dict[str, str]:
-        """Load prompt templates"""
         return {
             "system_role": (
                 "You are HKBU Study Companion, a friendly and accurate local assistant "
@@ -300,29 +263,18 @@ class PromptManager:
                 "CONTEXT USAGE RULES:\n"
                 "• You MUST only use the provided context to answer questions\n"
                 "• Always cite sources using [Source: title, Page X] format\n"
-                "• If the context mentions specific course codes (e.g., COMP7045), provide comprehensive details\n"
-                "• Never make up information outside the provided context\n"
-                "• If information is missing or unclear, explicitly state this"
+                "• Provide full details for mentioned course codes\n"
+                "• Never make up information outside the context\n"
+                "• State clearly if information is missing\n"
+                "• When answering about a specific course, DO NOT include content from other courses"
             ),
             "plan_instruction": (
                 "STUDY PLAN REQUIREMENTS:\n"
-                "1. TIME FORMAT CONSISTENCY:\n"
-                "   • Use THE SAME TIME FORMAT throughout the entire plan (e.g., if user says '3 hours/day', always write 'hours')"
-                "   • Never mix formats like '3 hours' and '120 minutes' in the same plan\n"
-                "2. CORE CONTENT EXTRACTION AND ALLOCATION:\n"
-                "   • Identify ALL core topics/concepts from the provided course context\n"
-                "   • Group related topics by learning area or level of complexity\n"
-                "   • Distribute core content across days: each day should cover 15-20% of the total content\n"
-                "   • Start with foundational concepts, progress to advanced topics\n"
-                "3. SPECIFIC LEARNING ASSIGNMENTS:\n"
-                "   • For EACH DAY, list specific chapters/sections to read (e.g., 'Chapter 3: Neural Networks, pages 45-67')\n"
-                "   • For EACH SESSION, specify concrete learning objectives extracted from context\n"
-                "   • Include specific practice problems, code implementations, or exercises from the course\n"
-                "   • Reference exact page numbers or section names when mentioned in context\n"
-                "4. FORMATTING:\n"
-                "   • Use consistent header format for each day (e.g., 'Day 1 (3 hours)', 'Day 2 (3 hours)', etc.)\n"
-                "   • Within each day, break down by hour or major topic with specific content\n"
-                "   • Use bullet points for clarity and readability"
+                "1. TIME FORMAT CONSISTENCY: Use uniform time units\n"
+                "2. CORE CONTENT EXTRACTION: Identify all key topics from context\n"
+                "3. DAILY ALLOCATION: Distribute content evenly across available days\n"
+                "4. SPECIFIC LEARNING ASSIGNMENTS: List exact chapters, pages, tasks\n"
+                "5. FORMATTING: Use clear, consistent structure"
             ),
             "response_format": (
                 "RESPONSE FORMAT:\n"
@@ -347,20 +299,10 @@ class PromptManager:
         user_goals: Optional[str] = None,
         user_workload: Optional[str] = None
     ) -> List[PromptElement]:
-        """Create list of prompt elements
         
-        Args:
-            query: User query
-            context_str: Retrieved context
-            history: Conversation history
-            mode: Task mode (qa, plan, brainstorm, summarize)
-            include_history: Include conversation history
-            user_time: Available time (e.g., "2 hours/day", "1 week")
-            user_goals: User's learning goals (e.g., "pass the exam", "understand AI concepts")
-            user_workload: Current workload (e.g., "heavy", "3 other courses")
-        """
         elements = []
         
+        # System role (critical)
         elements.append(PromptElement(
             name="system_role",
             template=self.templates["system_role"],
@@ -369,6 +311,7 @@ class PromptManager:
             required=True
         ))
         
+        # Context usage rules (high priority)
         elements.append(PromptElement(
             name="context_rules",
             template=self.templates["context_instruction"],
@@ -377,7 +320,7 @@ class PromptManager:
             required=True
         ))
         
-        # Add special instructions for planning tasks
+        # Add study plan specific rules if in plan mode
         if mode == "plan":
             elements.append(PromptElement(
                 name="plan_rules",
@@ -387,6 +330,7 @@ class PromptManager:
                 required=True
             ))
         
+        # Response format guidance
         elements.append(PromptElement(
             name="response_format",
             template=self.templates["response_format"],
@@ -395,6 +339,7 @@ class PromptManager:
             required=False
         ))
         
+        # Retrieved context (required)
         elements.append(PromptElement(
             name="context",
             template=self.templates["context_format"],
@@ -404,6 +349,7 @@ class PromptManager:
             required=True
         ))
         
+        # User constraints (time, goals, workload)
         if user_time or user_goals or user_workload:
             constraints_parts = []
             if user_time:
@@ -423,19 +369,15 @@ class PromptManager:
                 required=False
             ))
         
-        # For PLAN mode, add content mapping guidance to extract and allocate core topics
+        # Content mapping guidance for study plans
         if mode == "plan":
             content_mapping_guidance = (
                 "CONTENT MAPPING FOR STUDY PLAN:\n"
-                "Before creating the plan, identify:\n"
-                "1. Core Topics: List all major topics/chapters mentioned in the context\n"
-                "2. Sequence: Order them from foundational to advanced\n"
-                "3. Allocation: Distribute evenly across the available days\n"
-                "4. Daily Details: For each day, specify EXACT sections, page ranges, and practice items\n\n"
-                "Example format:\n"
-                "Day 1 (3 hours): Chapter 2: Fundamentals (pages 10-35) + Exercises 2.1-2.3\n"
-                "Day 2 (3 hours): Chapter 3: Core Algorithms (pages 36-65) + Lab Assignment 3\n"
-                "etc."
+                "1. List core topics from context\n"
+                "2. Order from basic to advanced\n"
+                "3. Distribute evenly across days\n"
+                "4. Specify exact sections/pages\n"
+                "Example: Day 1 (3 hours): Chapter 2 (pages 10-35) + Exercises"
             )
             elements.append(PromptElement(
                 name="content_mapping",
@@ -446,6 +388,7 @@ class PromptManager:
                 required=True
             ))
         
+        # Conversation history
         if include_history and history:
             history_text = "\n".join([
                 f"{m['role'].upper()}: {m['content'][:200]}..." 
@@ -461,12 +404,30 @@ class PromptManager:
                 required=False
             ))
         
+        # User query (critical)
         elements.append(PromptElement(
             name="query",
             template=self.templates["query_format"],
             content=query,
             token_estimate=len(query.split()) + 10,
             priority=ElementPriority.CRITICAL,
+            required=True
+        ))
+        
+        # ============================================================
+        # Auto prerequisite instruction (no mapping table needed)
+        # Instruct AI to mention prerequisites stated in context
+        # ============================================================
+        prerequisite_note = (
+            "IMPORTANT:\n"
+            "If the context mentions course prerequisites, you MUST mention them briefly at the END of your answer.\n"
+            "Do NOT explain prerequisite content — only state that prior knowledge is required."
+        )
+        elements.append(PromptElement(
+            name="prerequisite_notice",
+            template=prerequisite_note,
+            token_estimate=40,
+            priority=ElementPriority.HIGH,
             required=True
         ))
         
@@ -483,21 +444,7 @@ class PromptManager:
         user_goals: Optional[str] = None,
         user_workload: Optional[str] = None
     ) -> Tuple[str, Dict]:
-        """Assemble complete prompt with budget-aware assembly and generation control
         
-        Args:
-            query: User query
-            context_str: Retrieved context
-            history: Conversation history
-            mode: Task mode (qa, plan, brainstorm, summarize)
-            token_budget: Token budget (optional)
-            user_time: Available time for the task (e.g., "2 hours/day", "1 week")
-            user_goals: User's learning goals (e.g., "pass exam", "master concepts")
-            user_workload: Current workload context (e.g., "heavy", "3 other courses")
-        
-        Returns:
-            (assembled_prompt, metadata)
-        """
         if token_budget is None:
             token_budget = TokenBudget(
                 total_budget=4096,
@@ -551,13 +498,7 @@ class PromptManager:
         user_goals: Optional[str] = None,
         user_workload: Optional[str] = None
     ) -> str:
-        """Simple version: return prompt directly (backward compatible)
         
-        Args:
-            user_time: Available time
-            user_goals: Learning goals
-            user_workload: Current workload
-        """
         prompt, _ = self.assemble_prompt(
             query, context_str, history, mode,
             user_time=user_time,
@@ -568,12 +509,10 @@ class PromptManager:
     
     @staticmethod
     def estimate_tokens(text: str) -> int:
-        """Rough token estimation (should use actual tokenizer in production)"""
         return len(text.split()) + 10
     
     @staticmethod
     def get_element_info() -> Dict:
-        """Get information about all available elements"""
         return {
             "element_priorities": {
                 "CRITICAL": "Must be included, cannot be deleted",
