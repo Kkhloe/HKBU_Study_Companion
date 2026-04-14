@@ -5,9 +5,9 @@ Chat Logic for HKBU Study Companion
 
 import re
 import ollama
+from pathlib import Path
 from typing import List, Dict, Optional
 
-# Notebook: `from src.chat_logic import ChatLogic` (package). App/streamlit: `src` on sys.path (flat).
 try:
     from .rag_engine import RAGEngine
     from .prompt_manager import PromptManager, GenerationConfig, TokenBudget
@@ -15,16 +15,14 @@ except ImportError:
     from rag_engine import RAGEngine
     from prompt_manager import PromptManager, GenerationConfig, TokenBudget
 
-# --- Generation defaults ---
 DEFAULT_GENERATION_MODEL = "gemma3:4b"
 
-# Keep last N chat messages (user+assistant pairs count as 2 messages each).
+# Keep last N chat messages 
 HISTORY_MAX_MESSAGES = 12
 
-# HKBU-style course codes appearing in user text or syllabus citations (e.g. COMP7300, COMP7125)
-_COURSE_CODE_RE = re.compile(r"\b(COMP\d{4}[A-Z]?)\b", re.IGNORECASE)
 
-# Follow-ups that should reuse the last retrieval (reformat prior answer, not a new topic search)
+_COURSE_CODE_RE = re.compile(r"\b(COMP\s?\d{4}[A-Z]?)\b", re.IGNORECASE)
+
 _REUSE_CONTEXT_RE = re.compile(
     r"(?i)\b("
     r"rewrite|re-?write|rephrase|"
@@ -36,7 +34,7 @@ _REUSE_CONTEXT_RE = re.compile(
     r")\b"
 )
 
-# --- Reference text (docs/tests; not sent to the model unless you import and use it) ---
+# Reference text
 STUDY_PLAN_ASSISTANT_OUTPUT_GUIDELINES = """
 Expected assistant structure for study-plan responses (see PromptManager plan templates):
 - Per day: which course(s), hours, concrete knowledge points from syllabus/context
@@ -46,13 +44,6 @@ Expected assistant structure for study-plan responses (see PromptManager plan te
 
 
 class ChatLogic:
-    """
-    Conversation orchestration: mode detection, RAG retrieval, prompt assembly, and generation.
-
-    ``history`` stores prior user/assistant turns so follow-up queries (e.g., updating a plan)
-    are evaluated with conversation context. Uses ``ollama.generate``; pass ``model=`` per call or
-    ``DEFAULT_GENERATION_MODEL`` by default.
-    """
 
     def __init__(self, rag_engine: RAGEngine, prompt_manager: PromptManager):
         self.rag = rag_engine
@@ -74,23 +65,36 @@ class ChatLogic:
         return " ".join(m.get("content", "") for m in self.history)
 
     @staticmethod
+    def _display_source(meta: Dict) -> str:
+        """
+        Convert stored metadata source paths into a user-friendly label.
+        Prefer showing filename (or relative path) to avoid leaking stale absolute paths.
+        """
+        src = meta.get("source_path") or meta.get("title") or "Unknown"
+        try:
+            p = Path(str(src))
+            return p.name or str(src)
+        except Exception:
+            return str(src)
+
+    @staticmethod
     def _extract_course_codes(*texts: str) -> List[str]:
         seen = set()
         ordered: List[str] = []
         for t in texts:
             for m in _COURSE_CODE_RE.findall(t or ""):
-                u = m.upper()
+                u = m.upper().replace(" ", "")
                 if u not in seen:
                     seen.add(u)
                     ordered.append(u)
         return ordered[:6]
 
-    def _build_retrieval_query(self, query: str) -> str:
+    def _build_retrieval_query(self, query: str, course_codes: Optional[List[str]] = None) -> str:
         """
         Expand the user query with course codes mentioned in the current turn or prior history
         so follow-ups like "narrow that to assessment" still retrieve the same course.
         """
-        codes = self._extract_course_codes(query, self._history_blob())
+        codes = course_codes or self._extract_course_codes(query, self._history_blob())
         if not codes:
             return query.strip()
         return f"{' '.join(codes)} {query}".strip()
@@ -115,7 +119,6 @@ class ChatLogic:
         self.token_usage_stats["total_tokens"] += result["total_tokens"]
         self.token_usage_stats["queries_processed"] += 1
 
-    # --- Mode detection ---
 
     def _detect_mode(self, query: str) -> str:
         """Auto-detect task mode: qa, plan, brainstorm, or summarize (keyword-based)."""
@@ -138,7 +141,6 @@ class ChatLogic:
         
         return "qa"
 
-    # --- Main path: retrieve → assemble prompt → generate ---
 
     def process_query(
         self,
@@ -153,33 +155,16 @@ class ChatLogic:
         user_goals: Optional[str] = None,
         user_workload: Optional[str] = None,
         model: Optional[str] = None,
+        course_codes: Optional[List[str]] = None, 
     ) -> Dict:
-        """
-        Process one user turn: detect mode, retrieve context, assemble prompt, generate response.
-
-        ``model``: Ollama model name for generation (defaults to ``DEFAULT_GENERATION_MODEL``).
-
-        Conversation memory: prior turns in ``self.history`` are passed to the prompt manager
-        so multi-turn flows (e.g., revising a study plan) work like the notebook demo.
-        Set ``update_history=False`` when running side-by-side baselines so one query does not duplicate turns.
-
-        Structured constraints (optional) are forwarded to ``PromptManager.assemble_prompt`` so study-plan
-        prompts can include a USER CONSTRAINTS block (time, goals, workload).
-
-        Returns a dict including:
-        - response: model text
-        - prompt_tokens, completion_tokens, total_tokens: from Ollama eval counts
-        - mode, retrieval_type, cited_docs, context_used, budget_info, model
-        - metadata (if return_metadata): prompt assembly and generation config details
-        """
         mode = self._detect_mode(query)
         resolved_model = model or DEFAULT_GENERATION_MODEL
 
-        # 判断是否启用 ReAct
+        # ReAct path (if enabled)
         if hasattr(self, "react_engine") and getattr(self, "react_enabled", False):
-            # 使用 ReAct 推理（与主链路使用同一生成模型）
+            # Use ReAct reasoning (same generation model as the main path)
             self.react_engine.model = resolved_model
-            rq = self._build_retrieval_query(query)
+            rq = self._build_retrieval_query(query, course_codes=course_codes)
             context_str, retrieved_chunks = self.rag.neural_search(rq, top_k=top_k)
             react_result = self.react_engine.reason(query, context=context_str)
             result = {
@@ -193,7 +178,7 @@ class ChatLogic:
                 "mode": mode,
                 "retrieval_type": retrieval_type,
                 "cited_docs": list(dict.fromkeys([
-                    chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
+                    self._display_source(chunk.get("metadata", {}))
                     for chunk in retrieved_chunks
                 ])),
                 "context_used": len(retrieved_chunks),
@@ -205,7 +190,7 @@ class ChatLogic:
             self._accumulate_token_stats(result)
             return result
 
-        # 普通模式：检索查询带课程码（多轮）；改写类跟进可复用上一轮 context
+        # Standard path: retrieval query may include course codes; rewrite-like follow-ups may reuse last context.
         context_reused = False
         if self._should_reuse_last_retrieval(query):
             context_str = self._last_context_str or ""
@@ -215,9 +200,9 @@ class ChatLogic:
         else:
             retrieval_query = self._build_retrieval_query(query)
             if retrieval_type == "lexical":
-                context_str, retrieved_chunks = self.rag.lexical_search(retrieval_query, top_k=top_k)
+                context_str, retrieved_chunks = self.rag.lexical_search(retrieval_query, top_k=top_k, course_codes=course_codes)
             else:
-                context_str, retrieved_chunks = self.rag.neural_search(retrieval_query, top_k=top_k)
+                context_str, retrieved_chunks = self.rag.neural_search(retrieval_query, top_k=top_k, course_codes=course_codes)
             if update_history:
                 self._last_context_str = context_str
                 self._last_retrieved_chunks = retrieved_chunks
@@ -255,7 +240,7 @@ class ChatLogic:
             "mode": mode,
             "retrieval_type": retrieval_type,
             "cited_docs": list(dict.fromkeys([
-                chunk["metadata"].get("source_path", chunk["metadata"].get("title", "Unknown"))
+                self._display_source(chunk.get("metadata", {}))
                 for chunk in retrieved_chunks
             ])),
             "context_used": len(retrieved_chunks),
@@ -372,12 +357,12 @@ class ChatLogic:
 
     # --- Advanced / utilities ---
     def enable_react(self, react_engine):
-        """启用 ReAct 推理引擎"""
+        """Enable ReAct reasoning engine."""
         self.react_engine = react_engine
         self.react_enabled = True
 
     def disable_react(self):
-        """关闭 ReAct"""
+        """Disable ReAct reasoning."""
         self.react_enabled = False
 
     def process_query_advanced(

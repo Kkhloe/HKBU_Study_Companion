@@ -2,12 +2,13 @@
 import streamlit as st
 import ollama
 from pathlib import Path
+import re
 
-# 导入后端模块
+# Backend modules
 from rag_engine import RAGEngine
 from prompt_manager import PromptManager
 from chat_logic import ChatLogic
-from react_engine import ReActEngine  # ReAct 推理引擎
+from react_engine import ReActEngine  # ReAct reasoning engine
 
 st.set_page_config(
     page_title="HKBU Study Companion",
@@ -41,7 +42,7 @@ if "rag" not in st.session_state:
         st.session_state.chat = ChatLogic(st.session_state.rag, st.session_state.pm)
         st.session_state.messages = []
         
-        # 初始化 ReAct 引擎（但默认禁用）
+        # Initialize ReAct engine (disabled by default)
         st.session_state.react_engine = ReActEngine(max_steps=5, model="gemma3:4b")
         st.session_state.react_enabled = False
 
@@ -83,18 +84,18 @@ with st.sidebar:
     st.markdown("##### Generation")
     temperature = st.slider("Temperature", 0.0, 1.0, 0.0 if "qa" else 0.7, step=0.1)
     
-    # ==================== ReAct 推理引擎 ====================
+    # --- ReAct reasoning mode ---
     st.markdown("##### 🧠 Reasoning Mode (ReAct)")
     react_enable = st.checkbox("Enable ReAct Reasoning", value=st.session_state.react_enabled)
     
     if react_enable != st.session_state.react_enabled:
         st.session_state.react_enabled = react_enable
         if react_enable:
-            # 启用 ReAct
+            # Enable ReAct
             st.session_state.chat.enable_react(st.session_state.react_engine)
             st.success("✅ ReAct Reasoning Enabled")
         else:
-            # 禁用 ReAct
+            # Disable ReAct
             st.session_state.chat.disable_react()
             st.info("ReAct Reasoning Disabled")
     
@@ -108,7 +109,7 @@ with st.sidebar:
         )
         st.session_state.react_engine.max_steps = max_steps
     
-    # 文档管理
+    # Knowledge base
     st.markdown("##### Knowledge Base")
     if st.button("🔄 Rebuild Index (Natural)", use_container_width=True):
         with st.spinner("Rebuilding index..."):
@@ -149,7 +150,7 @@ if user_input:
         
         st.markdown(result["response"])
         
-        # ==================== 显示 ReAct 推理过程（如果启用） ====================
+        # Show ReAct steps (if enabled)
         if result.get("reasoning_enabled", False):
             with st.expander("🧠 Show Reasoning Steps"):
                 for step in result.get("reasoning_steps", []):
@@ -181,7 +182,7 @@ if user_input:
     
     sync_chat_history()
 
-# ====================== 学习计划生成器 ======================
+# --- Study plan generator ---
 st.markdown("### 📅 Generate Study Plan")
 with st.container():
     col1, col2, col3 = st.columns(3)
@@ -191,11 +192,26 @@ with st.container():
         study_goal = st.text_input("Study Goal", placeholder="e.g. COMP4146 final project")
     with col3:
         intensity = st.selectbox("Intensity Level", ["Light", "Medium", "High"])
-    
-    if st.button("🚀 Generate Personalized Study Plan", type="primary", use_container_width=True):
-        if time_limit and study_goal:
-            with st.spinner("AI is creating your study plan using course documents..."):
-                plan_query = f"""
+
+# Button and output should be full-width (not inside a column).
+if st.button("🚀 Generate Personalized Study Plan", type="primary", use_container_width=True):
+    if not (time_limit and study_goal):
+        st.warning("⚠️ Please fill in Available Time and Study Goal.")
+    else:
+        # Extract and lock course code for retrieval.
+        course_match = re.search(
+            r"(COMP\s?\d{4}|DAAI\s?\d{4}|ITM\s?\d{4}|AIDM\s?\d{4})",
+            study_goal,
+            re.IGNORECASE,
+        )
+        forced_course_codes = []
+        if course_match:
+            course_code = course_match.group(1).upper().replace(" ", "")
+            forced_course_codes = [course_code]
+            st.info(f"🔒 Locked to course: {course_code}")
+
+        with st.spinner("AI is creating your study plan using course documents..."):
+            plan_query = f"""
 You are a professional study plan generator for HKBU students.
 
 Create a realistic, step-by-step study plan based STRICTLY on the retrieved course materials.
@@ -203,7 +219,7 @@ Create a realistic, step-by-step study plan based STRICTLY on the retrieved cour
 Follow these rules:
 1. ONLY use information from the provided course documents.
 2. DO NOT invent content not in the documents.
-3. DO NOT switch to other courses (e.g., do NOT use COMP7200 if the goal is COMP7045).
+3. DO NOT switch to other courses. Use ONLY the target course materials.
 4. If information is insufficient, say "Not enough course material available."
 5. Structure the plan clearly by time slots and topics.
 
@@ -213,38 +229,39 @@ Intensity level: {intensity}
 
 Generate the study plan now.
 """
-                #【关键修复】一样要同步历史
-                sync_chat_history()
-                # 直接走同一个 RAG 管道（自动识别为 plan 模式）
-                result = st.session_state.chat.process_query(
-                    query=plan_query,
-                    retrieval_type=retrieval_type,
-                    use_react_override=False,
-                    model=model_name,
-                    user_time=time_limit,
-                    user_goals=study_goal,
-                    user_workload=intensity,
-                )
-            
-            st.success(f"🎯 Study Plan for: {study_goal}")
-            st.markdown(result["response"])
-            st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
-            
-            st.session_state.messages.append({"role": "user", "content": plan_query})
-            st.session_state.messages.append({
+            sync_chat_history()
+
+            # Force lexical retrieval and lock to the selected course.
+            result = st.session_state.chat.process_query(
+                query=plan_query,
+                retrieval_type="lexical",  # lexical retrieval for precise course matching
+                use_react_override=False,
+                model=model_name,
+                user_time=time_limit,
+                user_goals=study_goal,
+                user_workload=intensity,
+                course_codes=forced_course_codes,  # lock retrieval to this course
+            )
+
+        st.success(f"🎯 Study Plan for: {study_goal}")
+        st.markdown(result["response"])
+        st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
+
+        st.session_state.messages.append({"role": "user", "content": plan_query})
+        st.session_state.messages.append(
+            {
                 "role": "assistant",
                 "content": result["response"],
-                "cited_docs": result["cited_docs"]
-            })
-            
-            sync_chat_history()
-        else:
-            st.warning("⚠️ Please fill in Available Time and Study Goal.")
+                "cited_docs": result["cited_docs"],
+            }
+        )
 
-# ====================== LLM-as-a-Judge 评判区 ======================
+        sync_chat_history()
+
+# --- LLM-as-a-Judge (disabled) ---
 # st.markdown("### ⚖️ LLM-as-a-Judge ")
 # if st.session_state.messages:
-#     # 查找最近一条 assistant 回复和对应 user 问题
+#     # Find the last assistant answer and its user prompt
 #     last_user = None
 #     last_assistant = None
 #     for msg in reversed(st.session_state.messages):
@@ -258,7 +275,7 @@ Generate the study plan now.
 #         with st.expander("🔍 Judge the Last AI Answer"):
 #             if st.button("Run LLM Judge", key="judge_btn", use_container_width=True):
 #                 with st.spinner("LLM is evaluating the answer..."):
-#                     # 获取上下文（可选：拼接最近检索内容）
+#                     # Optional: provide extra context to the judge
 #                     context = ""
 #                     judge_result = st.session_state.chat.judge_response(
 #                         query=last_user["content"],
@@ -271,5 +288,5 @@ Generate the study plan now.
 #             else:
 #                 st.info("Click the button to evaluate the latest AI response.")
 
-# 页脚
+# Footer
 st.caption("Built with Ollama + Local RAG | FSC 801CD Compatible")

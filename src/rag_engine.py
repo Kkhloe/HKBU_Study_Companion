@@ -16,25 +16,24 @@ import numpy as np
 EMBED_MODEL = "nomic-embed-text"
 CHUNKS_DIR = Path("data")          
 VECTOR_DB_DIR = Path("vector_db")
-VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def load_chunks(chunk_file: str) -> List[Dict]:
-    for base_dir in [CHUNKS_DIR, Path("output")]:
-        file_path = base_dir / chunk_file
-        if file_path.exists():
-            chunks = []
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for idx, line in enumerate(f):
-                    if line.strip():
-                        data = json.loads(line)
-                        chunks.append({
-                            "id": f"{chunk_file}_{idx}",
-                            "text": data["page_content"],
-                            "metadata": data["metadata"]
-                        })
-            print(f"Loaded {len(chunks)} chunks from {file_path}")
-            return chunks
-    raise FileNotFoundError(f"Chunk file not found: {chunk_file} (checked data/ and output/)")
+    file_path = CHUNKS_DIR / chunk_file
+    if file_path.exists():
+        chunks = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for idx, line in enumerate(f):
+                if line.strip():
+                    data = json.loads(line)
+                    chunks.append({
+                        "id": f"{chunk_file}_{idx}",
+                        "text": data["page_content"],
+                        "metadata": data["metadata"]
+                    })
+        print(f"Loaded {len(chunks)} chunks from {file_path}")
+        return chunks
+    raise FileNotFoundError(f"Chunk file not found: {chunk_file} (checked data/)")
 
 
 # Lexical Retriever
@@ -92,22 +91,27 @@ class LexicalRetriever:
             for code in course_codes:
                 target_course_codes.add(code.upper().replace(' ', ''))
         
-        scored_results = []
-        
+        filtered_chunks = []
         for chunk_info in self.chunk_tokens:
+            if target_course_codes:
+                source_path = chunk_info["metadata"].get("source_path", "").upper()
+                keep = False
+                for code in target_course_codes:
+                    if code in source_path:
+                        keep = True
+                        break
+                if not keep:
+                    continue
+            filtered_chunks.append(chunk_info)
+
+        
+        scored_results = []
+
+        # Search only within the filtered set
+        for chunk_info in filtered_chunks:
             overlap = set(query_counter.keys()) & set(chunk_info["counter"].keys())
             if not overlap:
                 continue
-
-            if target_course_codes:
-                source_path = chunk_info["metadata"].get("source_path", "").upper()
-                keep_chunk = False
-                for code in target_course_codes:
-                    if code in source_path:
-                        keep_chunk = True
-                        break
-                if not keep_chunk:
-                    continue
             
             # Base score from token overlap
             score = sum(min(query_counter[word], chunk_info["counter"][word]) for word in overlap)
@@ -204,22 +208,31 @@ class NeuralRetriever:
             for code in course_codes:
                 target_course_codes.add(code.upper().replace(' ', ''))
         
-        scored_results = []
-
-        for i, emb_info in enumerate(self.embeddings):
-            similarity = self._cosine_similarity(query_emb, emb_info)
+        filtered_indices = []
+        for i, chunk in enumerate(self.chunks):
             if target_course_codes:
-                source_path = self.chunks[i]["metadata"].get("source_path", "").upper()
-                keep_chunk = False
+                source_path = chunk["metadata"].get("source_path", "").upper()
+                keep = False
                 for code in target_course_codes:
                     if code in source_path:
-                        keep_chunk = True
+                        keep = True
                         break
-                if not keep_chunk:
+                if not keep:
                     continue
+            filtered_indices.append(i)
+
+        
+        scored_results = []
+
+        # Compute similarity only within the filtered set
+        for i in filtered_indices:
+            emb_info = self.embeddings[i]
+            chunk = self.chunks[i]
+            
+            similarity = self._cosine_similarity(query_emb, emb_info)
             
             # Boost similarity for course match
-            source_path = self.chunks[i]["metadata"].get("source_path", "")
+            source_path = chunk["metadata"].get("source_path", "")
             for code in target_course_codes:
                 if code in source_path.upper():
                     similarity += 0.3
@@ -229,9 +242,9 @@ class NeuralRetriever:
             scored_results.append((
                 similarity,
                 {
-                    "id": self.chunks[i]["id"],
-                    "text": self.chunks[i]["text"],
-                    "metadata": self.chunks[i]["metadata"]
+                    "id": chunk["id"],
+                    "text": chunk["text"],
+                    "metadata": chunk["metadata"]
                 }
             ))
 
@@ -361,7 +374,12 @@ class RAGEngine:
     def lexical_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None, 
                        enable_post_filter: bool = False, deduplicate: bool = True) -> Tuple[str, List[Dict]]:
         extracted_codes = self._extract_course_codes(query)
-        all_codes = list(set((course_codes or []) + extracted_codes))
+        # If caller explicitly locks course codes, do NOT expand with codes found in prompt text.
+        # This prevents prompt templates (e.g., examples mentioning other courses) from polluting retrieval.
+        if course_codes:
+            all_codes = list(dict.fromkeys([c.upper().replace(" ", "") for c in course_codes if c]))
+        else:
+            all_codes = extracted_codes
         enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
         
         fetch_k = top_k * 2 if deduplicate else top_k
@@ -380,7 +398,11 @@ class RAGEngine:
     def neural_search(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None,
                       enable_post_filter: bool = False, deduplicate: bool = True) -> Tuple[str, List[Dict]]:
         extracted_codes = self._extract_course_codes(query)
-        all_codes = list(set((course_codes or []) + extracted_codes))
+        # If caller explicitly locks course codes, do NOT expand with codes found in prompt text.
+        if course_codes:
+            all_codes = list(dict.fromkeys([c.upper().replace(" ", "") for c in course_codes if c]))
+        else:
+            all_codes = extracted_codes
         enhanced_query = self._enhance_query_with_course_codes(query, all_codes)
         
         fetch_k = top_k * 2 if deduplicate else top_k
@@ -416,7 +438,7 @@ if __name__ == "__main__":
     engine = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
     
     test_queries = [
-        "COMP7045 grading",
+        "COMP7980 final exam",
         "COMP7530 assessment", 
         "What is the policy for COMP7055?",
     ]

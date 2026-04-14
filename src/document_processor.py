@@ -76,7 +76,12 @@ def load_documents(folder_path: str) -> List[Document]:
                 doc.page_content = clean_text(doc.page_content)
                 meta = dict(doc.metadata) if doc.metadata else {}
                 
-                meta['source_path'] = str(file_path.resolve())
+                # Store a stable, portable path label for citations.
+                # Avoid absolute paths so moving/copying the project doesn't produce stale Sources.
+                try:
+                    meta['source_path'] = str(file_path.relative_to(project_root))
+                except Exception:
+                    meta['source_path'] = str(file_path)
                 meta['title'] = file_path.stem
                 meta['doc_type'] = infer_doc_type(str(file_path))
                 meta['doc_id'] = get_doc_id_from_filename(str(file_path))
