@@ -10,11 +10,11 @@ def save_index(chunks: List[Dict], embeddings: np.ndarray, save_path: str = "vec
     ensure_dir("vector_db")
     data = {
         "chunks": chunks,
-        "embeddings": embeddings.tolist()   # numpy -> list for JSON
+        "embeddings": embeddings.tolist()
     }
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"The vector indices have been saved to {save_path} ({len(chunks)} chunks.)")
+    print(f"The index has been saved: {save_path} ({len(chunks)} blocks)")
 
 def load_index(load_path: str = "vector_db/index.json") -> tuple[List[Dict], np.ndarray]:
     if not Path(load_path).exists():
@@ -23,5 +23,5 @@ def load_index(load_path: str = "vector_db/index.json") -> tuple[List[Dict], np.
         data = json.load(f)
     chunks = data["chunks"]
     embeddings = np.array(data["embeddings"])
-    print(f"The vector index ({len(chunks)} chunks) has been loaded.")
+    print(f"Index loaded: {len(chunks)} blocks")
     return chunks, embeddings
