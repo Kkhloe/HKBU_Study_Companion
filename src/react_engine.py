@@ -1,13 +1,11 @@
 """
 ReAct Engine for HKBU Study Companion
-Modular design: independent reasoning module integrated with main logic via hooks
+
 Core idea: Thought → Action → Observation → Iterative loop
 
-Features:
-- Fully decoupled, no modifications to existing ChatLogic, RAGEngine, etc.
-- Interacts with external systems via callback hooks
-- Supports optional enable/disable
 """
+
+from urllib import response
 
 import ollama
 from typing import List, Dict, Optional, Callable, Tuple
@@ -58,7 +56,7 @@ class ReActEngine:
     """
     
     def __init__(self, 
-                 max_steps: int = 5,
+                 max_steps: int = 3,
                  model: str = "gemma3:4b"):
         self.max_steps = max_steps
         self.model = model
@@ -128,8 +126,8 @@ Provide your thought on what needs to be done next. Be concise."""
             action_type = ActionType.ANALYZE
             action_input = llm_output[:100]
         elif "generate" in llm_lower or "write" in llm_lower or "create" in llm_lower:
-            action_type = ActionType.GENERATE
-            action_input = llm_output[:100]
+            action_type = ActionType.SYNTHESIZE
+            action_input = llm_output[:500]
         elif "final" in llm_lower or "answer" in llm_lower or "conclude" in llm_lower:
             action_type = ActionType.SYNTHESIZE
             action_input = llm_output[:500]
@@ -139,19 +137,60 @@ Provide your thought on what needs to be done next. Be concise."""
         
         return action_type, action_input
 
-    def _execute_action(self, action: ActionType, action_input: str, query: str) -> str:
+    def _execute_action(self, action: ActionType, action_input: str, query: str, context: str = "") -> str:
         """Execute specified action and return observation"""
         
         if action == ActionType.SEARCH and self.on_search:
             # Invoke external search callback
-            context, chunks = self.on_search(action_input)
+            context_result, chunks = self.on_search(action_input)
             return f"Found relevant documents:\n{context[:300]}..."
         
         elif action == ActionType.ANALYZE:
             return f"Analyzed: {action_input[:200]}. More context needed."
         
         elif action == ActionType.SYNTHESIZE:
-            return f"Synthesized conclusion: {action_input[:300]}"
+            response = ollama.generate(
+                model=self.model,
+                prompt=f"""
+                You are generating a final answer based on provided context.
+
+                User query:
+                {query}
+
+                Context:
+                {context}
+
+                Reasoning:
+                {action_input}
+
+                Final Answer:
+                """,
+                options={
+                    "temperature": 0.5,
+                    "num_predict": 500,
+                }
+            )
+            return response["response"].strip()
+    
+        elif action == ActionType.GENERATE:
+            response = ollama.generate(
+                model=self.model,
+                prompt=f"""
+                You are generating a structured study plan.
+
+                User query: {query}
+                Instruction: {action_input}
+
+                Use prior observations and context if available.
+
+                Generate a clear, step-by-step plan.
+                """,
+                options={
+                    "temperature": 0.7,
+                    "num_predict": 300,
+                }
+            )
+            return response["response"].strip()
         
         elif action in self.action_handlers:
             return self.action_handlers[action](action_input)
@@ -200,7 +239,7 @@ Provide your thought on what needs to be done next. Be concise."""
             step.action, step.action_input = self._parse_action(step.thought)
 
             # 3. Execute action
-            step.observation = self._execute_action(step.action, step.action_input, query)
+            step.observation = self._execute_action(step.action, step.action_input, query, context)
 
             # 4. Check if conclusion is reached
             if step.action == ActionType.SYNTHESIZE or "final" in step.thought.lower():

@@ -43,7 +43,7 @@ if "rag" not in st.session_state:
         st.session_state.messages = []
         
         # Initialize ReAct engine (disabled by default)
-        st.session_state.react_engine = ReActEngine(max_steps=5, model="gemma3:4b")
+        st.session_state.react_engine = ReActEngine(max_steps=3, model="gemma3:4b")
         st.session_state.react_enabled = False
 
 def sync_chat_history():
@@ -104,7 +104,7 @@ with st.sidebar:
             "Max Reasoning Steps",
             min_value=1,
             max_value=10,
-            value=5,
+            value=3,
             help="Number of Thought-Action-Observation cycles"
         )
         st.session_state.react_engine.max_steps = max_steps
@@ -185,6 +185,7 @@ if user_input:
 # --- Study plan generator ---
 st.markdown("### 📅 Generate Study Plan")
 with st.container():
+
     col1, col2, col3 = st.columns(3)
     with col1:
         time_limit = st.text_input("Available Time", placeholder="e.g. 7 days, 2 hours/day")
@@ -231,11 +232,11 @@ Generate the study plan now.
 """
             sync_chat_history()
 
-            # Force lexical retrieval and lock to the selected course.
+            
             result = st.session_state.chat.process_query(
                 query=plan_query,
                 retrieval_type="lexical",  # lexical retrieval for precise course matching
-                use_react_override=False,
+                use_react_override=st.session_state.react_enabled,
                 model=model_name,
                 user_time=time_limit,
                 user_goals=study_goal,
@@ -245,6 +246,20 @@ Generate the study plan now.
 
         st.success(f"🎯 Study Plan for: {study_goal}")
         st.markdown(result["response"])
+
+        
+        if result.get("reasoning_enabled", False):
+            with st.expander("🧠 Show Reasoning Steps"):
+                for step in result.get("reasoning_steps", []):
+                    st.write(f"**Step {step['step']}**")
+                    st.write(f"Thought: {step['thought']}")
+                    st.write(f"Action: {step['action']}")
+                    st.write(f"Observation: {step['observation']}")
+                    st.divider()
+            if "reasoning_trace" in result:
+                with st.expander("📋 Full Reasoning Trace"):
+                    st.code(result["reasoning_trace"], language="text")
+
         st.caption(f"📌 Sources: {', '.join(result['cited_docs'])}")
 
         st.session_state.messages.append({"role": "user", "content": plan_query})
@@ -258,35 +273,6 @@ Generate the study plan now.
 
         sync_chat_history()
 
-# --- LLM-as-a-Judge (disabled) ---
-# st.markdown("### ⚖️ LLM-as-a-Judge ")
-# if st.session_state.messages:
-#     # Find the last assistant answer and its user prompt
-#     last_user = None
-#     last_assistant = None
-#     for msg in reversed(st.session_state.messages):
-#         if msg["role"] == "assistant" and last_assistant is None:
-#             last_assistant = msg
-#         elif msg["role"] == "user" and last_user is None:
-#             last_user = msg
-#         if last_user and last_assistant:
-#             break
-#     if last_user and last_assistant:
-#         with st.expander("🔍 Judge the Last AI Answer"):
-#             if st.button("Run LLM Judge", key="judge_btn", use_container_width=True):
-#                 with st.spinner("LLM is evaluating the answer..."):
-#                     # Optional: provide extra context to the judge
-#                     context = ""
-#                     judge_result = st.session_state.chat.judge_response(
-#                         query=last_user["content"],
-#                         answer=last_assistant["content"],
-#                         context=context
-#                     )
-#                 st.success(f"Score: {judge_result.get('score','?')}")
-#                 st.markdown(f"**Reasoning:** {judge_result.get('reasoning','')}")
-#                 st.markdown(f"**Suggestion:** {judge_result.get('suggestion','')}")
-#             else:
-#                 st.info("Click the button to evaluate the latest AI response.")
 
 # Footer
 st.caption("Built with Ollama + Local RAG | FSC 801CD Compatible")

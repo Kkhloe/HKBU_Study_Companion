@@ -160,13 +160,51 @@ class ChatLogic:
         mode = self._detect_mode(query)
         resolved_model = model or DEFAULT_GENERATION_MODEL
 
-        # ReAct path (if enabled)
+        # ===================== Retrieval  =====================
+        context_reused = False
+        if self._should_reuse_last_retrieval(query):
+            context_str = self._last_context_str or ""
+            retrieved_chunks = list(self._last_retrieved_chunks or [])
+            retrieval_query = "(reused previous turn context)"
+            context_reused = True
+        else:
+            retrieval_query = self._build_retrieval_query(query)
+            if retrieval_type == "lexical":
+                context_str, retrieved_chunks = self.rag.lexical_search(retrieval_query, top_k=top_k, course_codes=course_codes)
+            else:
+                context_str, retrieved_chunks = self.rag.neural_search(retrieval_query, top_k=top_k, course_codes=course_codes)
+            if update_history:
+                self._last_context_str = context_str
+                self._last_retrieved_chunks = retrieved_chunks
+
+        # ===================== Final Prompt =====================
+        if token_budget is None:
+            token_budget = TokenBudget(
+                total_budget=4096,
+                reserved_for_output=800 if mode == "qa" else 1000
+            )
+
+        final_prompt, prompt_metadata = self.prompt_manager.assemble_prompt(
+            query=query,
+            context_str=context_str,
+            history=self.history,
+            mode=mode,
+            token_budget=token_budget,
+            user_time=user_time,
+            user_goals=user_goals,
+            user_workload=user_workload,
+        )
+
+        # ===================== ReAct Mode =====================
         if hasattr(self, "react_engine") and getattr(self, "react_enabled", False):
-            # Use ReAct reasoning (same generation model as the main path)
             self.react_engine.model = resolved_model
-            rq = self._build_retrieval_query(query, course_codes=course_codes)
-            context_str, retrieved_chunks = self.rag.neural_search(rq, top_k=top_k)
-            react_result = self.react_engine.reason(query, context=context_str)
+            
+            
+            react_result = self.react_engine.reason(
+                query=query,  
+                context=final_prompt
+            )
+            
             result = {
                 "response": react_result["final_answer"],
                 "reasoning_enabled": True,
@@ -184,49 +222,20 @@ class ChatLogic:
                 "context_used": len(retrieved_chunks),
                 "budget_info": {"note": "ReAct reasoning mode"},
                 "model": resolved_model,
+                "retrieval_query": retrieval_query,
+                "context_reused": context_reused,
             }
             if update_history:
                 self._append_history_turn(query, react_result["final_answer"])
             self._accumulate_token_stats(result)
             return result
 
-        # Standard path: retrieval query may include course codes; rewrite-like follow-ups may reuse last context.
-        context_reused = False
-        if self._should_reuse_last_retrieval(query):
-            context_str = self._last_context_str or ""
-            retrieved_chunks = list(self._last_retrieved_chunks or [])
-            retrieval_query = "(reused previous turn context)"
-            context_reused = True
-        else:
-            retrieval_query = self._build_retrieval_query(query)
-            if retrieval_type == "lexical":
-                context_str, retrieved_chunks = self.rag.lexical_search(retrieval_query, top_k=top_k, course_codes=course_codes)
-            else:
-                context_str, retrieved_chunks = self.rag.neural_search(retrieval_query, top_k=top_k, course_codes=course_codes)
-            if update_history:
-                self._last_context_str = context_str
-                self._last_retrieved_chunks = retrieved_chunks
-
-        if token_budget is None:
-            token_budget = TokenBudget(
-                total_budget=4096,
-                reserved_for_output=800 if mode == "qa" else 1000
-            )
-        prompt, prompt_metadata = self.prompt_manager.assemble_prompt(
-            query=query,
-            context_str=context_str,
-            history=self.history,
-            mode=mode,
-            token_budget=token_budget,
-            user_time=user_time,
-            user_goals=user_goals,
-            user_workload=user_workload,
-        )
+        # ===================== Normal Mode =====================
         gen_config = GenerationConfig(mode=mode)
         gen_params = gen_config.get_generation_params()
         response = ollama.generate(
             model=resolved_model,
-            prompt=prompt,
+            prompt=final_prompt,
             options=gen_params
         )
         response_text = response["response"].strip()
@@ -259,7 +268,7 @@ class ChatLogic:
             result["metadata"] = {
                 "prompt_metadata": prompt_metadata,
                 "generation_config": gen_config.to_dict(),
-                "full_prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt
+                "full_prompt_preview": final_prompt[:500] + "..." if len(final_prompt) > 500 else final_prompt
             }
         if update_history:
             self._append_history_turn(query, response_text)
