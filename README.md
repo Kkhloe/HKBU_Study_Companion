@@ -121,7 +121,7 @@ Type `exit` to terminate the CLI session.
 
 # Project Modules
 
-## Retriever - Shu Yaming
+## Retriever 
 Path: `HKBUStudyCompanion/src/rag_engine.py`
 
 ### Usage
