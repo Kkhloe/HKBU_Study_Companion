@@ -315,4 +315,3 @@ screenshot/             # UI figures
 ### Absolute Path in Citation Sources
 - Rebuild chunk files to generate relative portable paths
 ```
-
