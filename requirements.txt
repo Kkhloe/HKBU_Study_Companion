@@ -5,5 +5,4 @@ ollama
 numpy
 pypdf
 tqdm
-str
 streamlit
