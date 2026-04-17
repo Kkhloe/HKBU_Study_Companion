@@ -13,6 +13,7 @@ This tool helps HKBU students organize course materials, retrieve lecture knowle
 - Embedding cache for faster repeated queries
 - ReAct reasoning loop (Thought-Action-Observation)
 - LLM-as-a-Judge automatic answer evaluation
+- Budget-aware structured prompt engineering system
 
 ## System Requirements
 - Windows 10 (PowerShell)
@@ -27,6 +28,7 @@ This tool helps HKBU students organize course materials, retrieve lecture knowle
 - Frontend: Streamlit
 - Reasoning: ReAct
 - Evaluation: LLM-as-a-Judge
+- Prompt Engine: Budget-controlled PromptManager
 - Data Format: JSONL
 
 ---
@@ -121,7 +123,7 @@ Type `exit` to terminate the CLI session.
 
 # Project Modules
 
-## Retriever 
+## Retriever
 Path: `HKBUStudyCompanion/src/rag_engine.py`
 
 ### Usage
@@ -154,7 +156,7 @@ result = engine.compare_retrievers("your question", top_k=3)
 
 ---
 
-## Evaluation 
+## Evaluation
 File: `evaluation_update.ipynb`
 
 This notebook is the **main evaluation** artifact. It runs top-to-bottom and produces figures/tables for project reports (quality + token-efficiency evidence).
@@ -206,7 +208,7 @@ Uses chunk file:
 
 ---
 
-## Chat Logic 
+## Chat Logic
 
 **What it is:**
 A module that runs one round of chat: task detection → retrieve → prompt → call Ollama → return answer & stats.
@@ -226,7 +228,98 @@ A module that runs one round of chat: task detection → retrieve → prompt →
 
 ---
 
-## ReAct & LLM-as-a-Judge 
+## Prompt Manager
+Path: `src/prompt_manager.py`
+
+### Overview
+Prompt Manager is the core prompt engineering module for HKBU Study Companion.
+It implements **data-driven prompt composition, token budget control, priority-based element management, and task-adaptive generation configuration**.
+
+Core capabilities：
+- Modular & prioritized prompt element design
+- Fine-grained token budget allocation and overflow protection
+- Automatic context/history truncation
+- Four task modes with independent LLM generation parameters
+- Standardized system instructions, constraints and response rules
+- Full metadata recording for prompt assembly & token consumption
+
+### Core Architecture
+1. **Prompt Element Data Model**
+2. **Token Budget Controller**
+3. **Budget-Aware Prompt Assembly Strategy**
+4. **Task-Oriented Generation Configuration**
+
+#### 1. Prompt Element & Priority Control
+All prompt segments are encapsulated as `PromptElement`, with four priority levels:
+- `CRITICAL`: Must be included (system role, user query)
+- `HIGH`: Core content (context, domain rules, plan guidelines)
+- `MEDIUM`: Optional content (chat history, user constraints)
+- `LOW`: Auxiliary content, truncated first
+
+Each element supports dynamic rendering, content injection and token estimation.
+
+#### 2. Token Budget Management
+`TokenBudget` controls overall context window limitation：
+- Calculate available prompt tokens by reserving output tokens
+- Real-time token usage tracking
+- Prevent LLM context overflow
+- Built-in `truncate_to_tokens` for long text compression
+
+#### 3. Budget-Aware Assembly Logic
+`PromptAssemblyStrategy` follows strict assembly order：
+1. Force load all critical & required elements
+2. Sort optional elements by priority descending
+3. Allocate tokens within remaining budget
+4. Auto truncate context/chat history when exceeding limits
+5. Record included / excluded / truncated elements for debugging & evaluation
+
+#### 4. Multi-Mode Generation Config
+Predefined four task modes with independent hyperparameters：
+- `qa`: Low temperature, factual & citation-first
+- `plan`: Medium temperature, structured long-form study plan
+- `brainstorm`: High temperature, diverse & open generation
+- `summarize`: Low temperature, concise key-point output
+
+Each mode contains：
+- Temperature / top_p / top_k / num_predict
+- Task-specific constraints
+- Standard guidance prefix
+
+### Core API
+```python
+from src.prompt_manager import PromptManager
+
+pm = PromptManager()
+
+# Full assembly with budget & metadata
+full_prompt, metadata = pm.assemble_prompt(
+    query="Your question",
+    context_str=retrieved_context,
+    history=chat_history,
+    mode="qa"
+)
+
+# Simplified prompt only
+simple_prompt = pm.assemble_prompt_simple(
+    query="7-day study plan",
+    context_str=course_context,
+    history=chat_history,
+    mode="plan",
+    user_time="2 hours per day",
+    user_goals="Final exam preparation"
+)
+```
+
+### Module Value
+- Unified prompt standard across the whole project
+- Effectively avoids context overflow and model OOM
+- Supports flexible switching of academic task types
+- Traceable prompt quality & token efficiency for evaluation
+- Easy to maintain, expand and add new prompt rules
+
+---
+
+## ReAct & LLM-as-a-Judge
 
 ### Introduction of ReAct
 #### Core Features
@@ -271,7 +364,7 @@ Uses LLM (e.g., gemma3:12b) to automatically evaluate answer quality, output sco
 
 #### Usage Example
 ```python
-from LLM_judge_engine import JudgeEngine
+from judge_engine import JudgeEngine
 
 judge = JudgeEngine(model="gemma3:12b")
 result = judge.judge(query="What is RAG?", answer="RAG means ...", context="...")
@@ -288,9 +381,9 @@ src/
 ├─ rag_engine.py        # Retrieval & embedding cache (Shu Yaming)
 ├─ document_processor.py# PDF/TXT parsing & chunking (Lin Jing)
 ├─ chat_logic.py        # RAG pipeline (He Bien)
-├─ prompt_manager.py    # Prompt template & token control (OU Yuanlin)
+├─ prompt_manager.py    # Budget-aware prompt engine (OU Yuanlin)
 ├─ react_engine.py      # ReAct reasoning (Cai Xueying)
-├─ react_prompt_manager.py (Cai Xueying)
+├─ react_prompt_manager.py # (Cai Xueying)
 └─ judge_engine.py      # LLM-as-a-Judge (Cai Xueying)
 
 data/                   # Course materials & chunk files
