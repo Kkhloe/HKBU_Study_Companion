@@ -206,7 +206,7 @@ Uses chunk file:
 
 ---
 
-## Chat Logic - He Bien
+## Chat Logic 
 
 **What it is:**
 A module that runs one round of chat: task detection → retrieve → prompt → call Ollama → return answer & stats.
@@ -226,7 +226,7 @@ A module that runs one round of chat: task detection → retrieve → prompt →
 
 ---
 
-## ReAct & LLM-as-a-Judge - Cai Xueying
+## ReAct & LLM-as-a-Judge 
 
 ### Introduction of ReAct
 #### Core Features
