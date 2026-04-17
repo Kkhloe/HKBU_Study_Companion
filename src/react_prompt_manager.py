@@ -12,11 +12,6 @@ from typing import List, Dict
 
 
 class ReactPromptManager:
-    """
-    Generates optimized prompts for the ReAct reasoning engine
-    Ensures the model follows the Thought → Action → Observation loop
-    """
-    
     @staticmethod
     def assemble_react_thought_prompt(
         query: str,
@@ -24,7 +19,6 @@ class ReactPromptManager:
         step_num: int = 1,
         prev_steps: str = ""
     ) -> str:
-        """Generate prompt for the reasoning thought step"""
         
         prompt = f"""You are an intelligent reasoning assistant for HKBU Study Companion.
 Analyze the user's question step by step. Think carefully about what needs to be done.
@@ -53,7 +47,6 @@ Your Thought:"""
         thought: str,
         available_actions: List[str] = None
     ) -> str:
-        """Generate prompt for action selection"""
         
         if available_actions is None:
             available_actions = ["search", "analyze", "clarify", "conclude"]
@@ -85,7 +78,6 @@ Your Response:"""
         reasoning_steps: List[Dict],
         context: str
     ) -> str:
-        """Synthesize all reasoning steps to generate the final answer"""
         
         # Build summary of reasoning steps
         steps_summary = ""
@@ -120,7 +112,6 @@ Final Answer:"""
         query: str,
         context: str
     ) -> str:
-        """Generate prompt for refining the initial answer"""
         
         prompt = f"""Review and refine the following answer for accuracy and completeness.
 

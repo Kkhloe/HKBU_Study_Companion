@@ -90,10 +90,6 @@ class ChatLogic:
         return ordered[:6]
 
     def _build_retrieval_query(self, query: str, course_codes: Optional[List[str]] = None) -> str:
-        """
-        Expand the user query with course codes mentioned in the current turn or prior history
-        so follow-ups like "narrow that to assessment" still retrieve the same course.
-        """
         codes = course_codes or self._extract_course_codes(query, self._history_blob())
         if not codes:
             return query.strip()
@@ -107,7 +103,6 @@ class ChatLogic:
         return _REUSE_CONTEXT_RE.search(query.strip()) is not None
 
     def _append_history_turn(self, query: str, assistant_text: str) -> None:
-        """Append one user/assistant exchange and trim to HISTORY_MAX_MESSAGES."""
         self.history.append({"role": "user", "content": query})
         self.history.append({"role": "assistant", "content": assistant_text})
         if len(self.history) > HISTORY_MAX_MESSAGES:
@@ -121,7 +116,6 @@ class ChatLogic:
 
 
     def _detect_mode(self, query: str) -> str:
-        """Auto-detect task mode: qa, plan, brainstorm, or summarize (keyword-based)."""
         query_lower = query.lower()
         
         plan_keywords = [
@@ -283,10 +277,6 @@ class ChatLogic:
         update_history: bool = True,
         model: Optional[str] = None,
     ) -> Dict:
-        """
-        Baseline generation without retrieved documents (no local context), for no-RAG vs RAG comparison.
-        Matches the minimal prompt style used in ``notebooks/evaluation_update.ipynb`` / ``evaluation.py``.
-        """
         mode = self._detect_mode(query)
         resolved_model = model or DEFAULT_GENERATION_MODEL
         prompt = f"You are HKBU Study Companion.\nUser: {query}\nAssistant: "
@@ -328,7 +318,6 @@ class ChatLogic:
         user_workload: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Dict:
-        """Run no-RAG and RAG on the same query without appending duplicate history entries."""
         no_rag = self.process_query_no_rag(query, update_history=False, model=model)
         rag = self.process_query(
             query,
@@ -351,7 +340,6 @@ class ChatLogic:
         user_workload: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Dict:
-        """Run lexical and neural RAG on the same query without appending duplicate history entries."""
         kw = dict(
             top_k=top_k,
             update_history=False,
@@ -366,12 +354,10 @@ class ChatLogic:
 
     # --- Advanced / utilities ---
     def enable_react(self, react_engine):
-        """Enable ReAct reasoning engine."""
         self.react_engine = react_engine
         self.react_enabled = True
 
     def disable_react(self):
-        """Disable ReAct reasoning."""
         self.react_enabled = False
 
     def process_query_advanced(
@@ -386,7 +372,6 @@ class ChatLogic:
         user_workload: Optional[str] = None,
         model: Optional[str] = None,
     ) -> Dict:
-        """Advanced query processing with custom token budgets; calls process_query with return_metadata=True."""
         token_budget = TokenBudget(
             total_budget=max_prompt_tokens + max_output_tokens,
             reserved_for_output=max_output_tokens
@@ -406,17 +391,14 @@ class ChatLogic:
         )
 
     def clear_history(self):
-        """Clear multi-turn conversation history (e.g., before a new demo or isolated task)."""
         self.history.clear()
         self._last_context_str = None
         self._last_retrieved_chunks = None
 
     def get_token_stats(self) -> Dict:
-        """Get token usage statistics"""
         return self.token_usage_stats
 
     def reset_token_stats(self):
-        """Reset token statistics"""
         self.token_usage_stats = {
             "total_prompt_tokens": 0,
             "total_completion_tokens": 0,
@@ -425,7 +407,6 @@ class ChatLogic:
         }
 
     def get_system_info(self) -> Dict:
-        """Get system information and statistics"""
         return {
             "rag_engine": type(self.rag).__name__,
             "prompt_manager": type(self.prompt_manager).__name__,

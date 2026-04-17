@@ -67,7 +67,7 @@ with st.sidebar:
     st.markdown("##### Model")
     model_name = st.selectbox(
         label="",
-        options=["gemma3:4b", "gemma3:12b", "qwen3:9b"],
+        options=["gemma3:4b", "gemma3:12b", "qwen3:8b"],
         index=0,
         label_visibility="collapsed"
     )

@@ -13,7 +13,6 @@ from enum import Enum
 
 
 class ActionType(Enum):
-    """Action types executable by ReAct"""
     SEARCH = "search"           # Retrieve documents
     ANALYZE = "analyze"         # Analyze information
     GENERATE = "generate"       # Generate response
@@ -23,7 +22,6 @@ class ActionType(Enum):
 
 
 class ThinkingStep:
-    """Single reasoning step"""
     def __init__(self, step_num: int):
         self.step_num = step_num
         self.thought = ""
@@ -44,16 +42,6 @@ class ThinkingStep:
 
 
 class ReActEngine:
-    """
-    ReAct Reasoning Engine (Plugin Mode)
-    
-    Core workflow:
-    1. Initial thought (Thought)
-    2. Select action (Action) & action parameters (Action Input)
-    3. Execute action to get observation (Observation)
-    4. Iterate until conclusion is reached
-    5. Return final answer
-    """
     
     def __init__(self, 
                  max_steps: int = 3,
@@ -71,23 +59,18 @@ class ReActEngine:
         self.on_complete: Optional[Callable[[Dict], None]] = None
 
     def register_action_handler(self, action_type: ActionType, handler: Callable):
-        """Register custom action handler"""
         self.action_handlers[action_type] = handler
 
     def set_search_callback(self, callback: Callable[[str], Tuple[str, List[Dict]]]):
-        """Set search callback (invokes RAG engine)"""
         self.on_search = callback
 
     def set_step_callback(self, callback: Callable[[ThinkingStep], None]):
-        """Set step callback (for logging / UI updates)"""
         self.on_step = callback
 
     def set_complete_callback(self, callback: Callable[[Dict], None]):
-        """Set completion callback"""
         self.on_complete = callback
 
     def _generate_thought(self, query: str, context: str, prev_steps: str = "") -> Tuple[str, dict]:
-        """Use LLM to generate thinking step, return (thought, token_info)"""
         prompt = f"""You are a reasoning assistant for HKBU Study Companion.
 Analyze the user's query step by step.
 
@@ -115,7 +98,6 @@ Provide your thought on what needs to be done next. Be concise."""
         return response["response"].strip(), token_info
 
     def _parse_action(self, llm_output: str) -> Tuple[Optional[ActionType], str]:
-        """Parse action and parameters from LLM output"""
         llm_lower = llm_output.lower()
         
         # Pattern matching (simplified)
@@ -138,7 +120,6 @@ Provide your thought on what needs to be done next. Be concise."""
         return action_type, action_input
 
     def _execute_action(self, action: ActionType, action_input: str, query: str, context: str = "") -> str:
-        """Execute specified action and return observation"""
         
         if action == ActionType.SEARCH and self.on_search:
             # Invoke external search callback
@@ -199,23 +180,6 @@ Provide your thought on what needs to be done next. Be concise."""
             return f"Action {action.value} not yet implemented."
 
     def reason(self, query: str, context: str = "", retrieval_callback: Optional[Callable] = None) -> Dict:
-        """
-        Core reasoning loop
-        
-        Parameters:
-        - query: user question
-        - context: initial context
-        - retrieval_callback: RAG search callback
-        
-        Returns:
-        {
-            "final_answer": str,
-            "reasoning_steps": List[Dict],
-            "total_steps": int,
-            "success": bool
-        }
-        """
-        
         # Set search callback if provided
         if retrieval_callback:
             self.set_search_callback(retrieval_callback)
@@ -286,7 +250,6 @@ Provide your thought on what needs to be done next. Be concise."""
         return result
 
     def _synthesize_answer(self) -> Tuple[str, dict]:
-        """Synthesize final answer from all steps, return (answer, token_info)"""
         if not self.steps:
             return "Unable to generate answer.", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
@@ -315,7 +278,6 @@ Final Answer:"""
         return response["response"].strip(), token_info
 
     def get_reasoning_trace(self) -> str:
-        """Get human-readable reasoning process"""
         trace = f"\n{'='*60}\nReAct Reasoning Trace\n{'='*60}\n"
         for step in self.steps:
             trace += f"\n[Step {step.step_num}]\n"
@@ -326,5 +288,4 @@ Final Answer:"""
         return trace
 
     def reset(self):
-        """Reset engine state"""
         self.steps = []

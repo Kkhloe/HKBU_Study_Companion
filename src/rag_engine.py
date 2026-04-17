@@ -137,7 +137,6 @@ class LexicalRetriever:
         return scored_results[:top_k]
     
     def answer_with_context(self, query: str, top_k: int = 3, course_codes: Optional[List[str]] = None) -> Tuple[str, List[Dict]]:
-        """Return formatted context string and chunks"""
         results = self.retrieve(query, top_k, course_codes=course_codes)
         
         if not results:
@@ -292,7 +291,6 @@ class RAGEngine:
         print(f"RAG Engine ready! ({len(self.chunks)} chunks)")
 
     def _load_or_build_embeddings(self) -> np.ndarray:
-        """Load cached embeddings or generate new ones"""
         cache_path = VECTOR_DB_DIR / f"{self.chunk_file.replace('.jsonl', '_embeddings.npy')}"
         
         if cache_path.exists():
@@ -326,7 +324,6 @@ class RAGEngine:
         return list(set([m.replace(' ', '') for m in all_matches]))
     
     def _enhance_query_with_course_codes(self, query: str, course_codes: List[str]) -> str:
-        """Enhance query with course code variations"""
         if not course_codes:
             return query
         
@@ -427,33 +424,3 @@ class RAGEngine:
             "lexical": {"context": lexical_context, "chunks": lexical_chunks, "num_chunks": len(lexical_chunks)},
             "neural": {"context": neural_context, "chunks": neural_chunks, "num_chunks": len(neural_chunks)}
         }
-
-
-# Test code
-if __name__ == "__main__":
-    print("=" * 70)
-    print("HKBU Study Companion - RAG Engine Test")
-    print("=" * 70)
-    
-    engine = RAGEngine(chunk_file="chunks_natural_500_50.jsonl")
-    
-    test_queries = [
-        "COMP7980 final exam",
-        "COMP7530 assessment", 
-        "What is the policy for COMP7055?",
-    ]
-    
-    for test_query in test_queries:
-        print(f"\n" + "=" * 70)
-        print(f"Test query: {test_query}")
-        print("-" * 70)
-        
-        print("\nLexical Retrieval:")
-        lex_ctx, lex_chunks = engine.lexical_search(test_query, top_k=2)
-        print(lex_ctx)
-        
-        print("\nNeural Retrieval:")
-        neu_ctx, neu_chunks = engine.neural_search(test_query, top_k=2)
-        print(neu_ctx)
-    
-    print("\n✅ RAG Engine test completed.")
