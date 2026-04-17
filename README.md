@@ -283,14 +283,14 @@ print(result)
 ## Project Structure
 ```
 src/
-├─ app.py               # Streamlit web entry
-├─ main.py              # CLI demo entry
+├─ app.py               # Streamlit web entry (Yan Zibo)
+├─ main.py              # CLI demo entry (OU Yuanlin)
 ├─ rag_engine.py        # Retrieval & embedding cache (Shu Yaming)
-├─ document_processor.py# PDF/TXT parsing & chunking
+├─ document_processor.py# PDF/TXT parsing & chunking (Lin Jing)
 ├─ chat_logic.py        # RAG pipeline (He Bien)
-├─ prompt_manager.py    # Prompt template & token control
+├─ prompt_manager.py    # Prompt template & token control (OU Yuanlin)
 ├─ react_engine.py      # ReAct reasoning (Cai Xueying)
-├─ react_prompt_manager.py
+├─ react_prompt_manager.py (Cai Xueying)
 └─ judge_engine.py      # LLM-as-a-Judge (Cai Xueying)
 
 data/                   # Course materials & chunk files
@@ -314,4 +314,3 @@ screenshot/             # UI figures
 
 ### Absolute Path in Citation Sources
 - Rebuild chunk files to generate relative portable paths
-```
